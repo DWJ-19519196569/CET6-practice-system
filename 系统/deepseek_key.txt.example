@@ -1,0 +1,4 @@
+# 使用说明：
+# 1. 把本文件复制为 deepseek_key.txt（同目录）
+# 2. 删除本行注释，填入你的 DeepSeek API key（形如 sk-xxxxxxxx）
+# 3. deepseek_key.txt 已被 .gitignore 排除，不会上传到 GitHub

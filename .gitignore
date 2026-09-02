@@ -1,0 +1,21 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+
+# ---- 密钥：真实 API key 不入库，用 deepseek_key.txt.example 作模板 ----
+系统/deepseek_key.txt
+
+# ---- 运行时状态与个人数据（本机生成，不入库）----
+系统/state.json
+系统/历史记录/
+每日一篇/
+互动故事/
+
+# ---- 音频产物 ----
+*.wav
+*.mp3
+
+# ---- 其它 ----
+*.log
+.DS_Store
+Thumbs.db

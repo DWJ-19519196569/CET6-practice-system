@@ -1,0 +1,54 @@
+# config.toml — CET-6 听力系统配置
+
+[server]
+port = 8123
+
+[llm]
+# 质量开关：local = 本地 Qwen（免费快速） / cloud = LiteLLM 网关云端（质量对比用）
+active = "local"
+
+[llm.local]
+base_url = "http://127.0.0.1:8081/v1"
+model = "qwen3.8-27b"
+api_key = "local"
+
+[llm.cloud]
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-pro"
+# 官方模型列表（DeepSeek 官方 API，非本地网关）
+models = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
+# API key 由前端填写，存储到 deepseek_key.txt，不写死在配置里
+api_key = ""
+
+[llm.generation]
+temperature = 0.85
+max_tokens = 4096   # 本地无思考用 2048 也够；云端 DeepSeek 是思考模型，思考+正文需要余量
+no_think = true   # Qwen enable_thinking=false，故事创作不需要 CoT（medium 会思考失控耗光 token）
+timeout = 180     # 单次请求超时（秒）；过长的 600s 会让模型卡住时长时间挂起
+max_retries = 1   # 失败重试次数（仅连接/超时重试，不重试 HTTP 4xx/5xx）
+
+[tts]
+voice_main = "af_heart"     # 女声主音色（独白/旁白）
+voice_male = "am_michael"   # 男声（对话 Speaker B / 讲座可换）
+speed = 1.0
+
+[daily]
+chunk_size = 300    # 每日词块（对齐百词斩每日新词量）
+sample_n = 60       # 每篇采样织入的目标词数
+# 题型轮换顺序：day % 3 → 0=长对话 1=短文 2=讲座
+length_conversation = 280
+length_passage = 300
+length_lecture = 400
+
+[interactive]
+segment_words_min = 80   # 互动每段词数下限
+segment_words_max = 120  # 上限
+history_max_segments = 8 # 续写时携带的最近段数（控 context）
+
+[paths]
+# 相对路径以 server.py 所在目录（系统\）为基准解析（见 server.py 的 _resolve_path()）；换机/克隆后可直接运行
+cet6_root = '..'
+wordlist = '..\单词\wordlist_cet6_乱序.txt'
+daily_dir = '..\每日一篇'
+story_dir = '..\互动故事'
+state = 'state.json'
