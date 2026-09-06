@@ -75,18 +75,11 @@ class DisplayUnitTests(unittest.TestCase):
         self.assertIn('competent', note)
         self.assertIn('Weave', note)
 
-    def test_story_vocab_toggle_api(self):
-        from fastapi.testclient import TestClient
+    def test_story_vocab_always_on(self):
         import server as S
-        old = S._interactive_vocab
-        try:
-            r = TestClient(S.app).post('/api/story/vocab', json={'enabled': True})
-            self.assertEqual(r.status_code, 200, r.text)
-            self.assertEqual(r.json().get('enabled'), True)
-            r2 = TestClient(S.app).post('/api/story/vocab', json={'enabled': False})
-            self.assertEqual(r2.json().get('enabled'), False)
-        finally:
-            S._interactive_vocab = old
+        note = S._story_vocab()  # 织词恒开（无开关），直接返回非空备注
+        self.assertTrue(note)
+        self.assertIn('Weave', note)
 
     def test_trw_exclude_reads_from_history(self):
         import tempfile

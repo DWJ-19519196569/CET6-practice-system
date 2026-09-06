@@ -17,12 +17,13 @@ import re
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 
 import numpy as np
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -30,9 +31,12 @@ import engine as E
 from engine import (LLMClient, TTSEngine, build_daily_prompt, parse_dialog_lines,
                     load_config, load_state, current_day, split_sentences)
 from wordlist import Wordlist
+import pronounce as P
 
 cfg = load_config()
 E.init_profiles(cfg)
+# 口语评测的参考声与项目 TTS 主音色保持一致（af_heart 等）
+os.environ['OPENPRONOUNCE_TTS_VOICE'] = cfg['tts'].get('voice_main', 'af_heart')
 
 
 def _resolve_path(p: str) -> str:
@@ -49,8 +53,9 @@ client = LLMClient(cfg)
 _tts: TTSEngine | None = None
 _tts_lock = threading.Lock()
 _sessions: dict = {}
+_session_dir_lock = threading.Lock()  # 互动 session 目录创建的并发互斥
 _translate_cache: dict = {}
-_interactive_vocab = False  # 互动故事织词开关（默认关，前端 toggle）
+_cache_lock = threading.Lock()     # 内存缓存（翻译/单词TTS/词义/在线探测）读-改-写互斥
 _history_lock = threading.Lock()   # 历史索引读-改-写互斥，防并发归档丢条目
 SESSION_TTL_SECONDS = 30 * 60      # 互动 session 空闲 30 分钟自动清理
 TRANSLATE_CACHE_MAX = 500          # 逐句翻译缓存容量上限
@@ -69,8 +74,19 @@ def _history_index() -> list[dict]:
     p = _history_dir() / 'history.json'
     if p.exists():
         try:
-            return json.loads(p.read_text(encoding='utf-8'))
+            data = json.loads(p.read_text(encoding='utf-8'))
+            # 结构校验：必须是 dict 列表，否则走损坏备份流程（防 {} / [null] 导致后续 KeyError/TypeError）
+            if not isinstance(data, list) or not all(isinstance(i, dict) for i in data):
+                raise ValueError('history.json 结构非法（期望 list[dict]）')
+            return data
         except Exception:
+            # 索引损坏：备份而非静默清空，避免下次保存把历史全抹掉
+            try:
+                backup = p.with_suffix('.json.corrupt-' + time.strftime('%Y%m%d%H%M%S'))
+                p.replace(backup)
+                print(f'[history] history.json 损坏，已备份为 {backup.name}', flush=True)
+            except Exception:
+                pass
             return []
     return []
 
@@ -114,8 +130,82 @@ def _history_get(item_id: str):
         if i['id'] == item_id:
             cpath = Path(i['path']) / 'content.json'
             if cpath.exists():
-                return {**i, **json.loads(cpath.read_text(encoding='utf-8'))}
+                try:
+                    content = json.loads(cpath.read_text(encoding='utf-8'))
+                except Exception:
+                    content = {}
+                # 索引字段（id/path/created_at/type/date/title）优先，防 content 里的同名键覆盖
+                return {**content, **i}
     return None
+
+
+def _history_content(item_id: str) -> dict:
+    """只读某条目的 content.json 内容（不含索引字段 id/path/created_at），用于合并更新时保留旧字段。"""
+    for i in _history_index():
+        if i['id'] == item_id:
+            cpath = Path(i['path']) / 'content.json'
+            if cpath.exists():
+                try:
+                    return json.loads(cpath.read_text(encoding='utf-8'))
+                except Exception:
+                    return {}
+    return {}
+
+
+def _delete_attached_audio(item: dict):
+    """删除条目关联的音频（每日一篇/互动故事各自独立存储，历史删除时一并清理）。
+
+    新数据中 audio_dir 指向「条目自己的唯一子目录」（每日一篇也按 时间戳_id 建子目录），
+    整删安全；老数据中每日一篇的 audio_dir 可能指向共享的「每日一篇/日期」目录，
+    此时只删条目自己的音频文件，避免波及同日其它条目。
+    """
+    import shutil
+    cpath = Path(item['path']) / 'content.json'
+    if not cpath.exists():
+        return
+    try:
+        content = json.loads(cpath.read_text(encoding='utf-8'))
+    except Exception:
+        return
+    daily_root = Path(_resolve_path(cfg['paths']['daily_dir'])).resolve()
+    story_root = Path(_resolve_path(cfg['paths']['story_dir'])).resolve()
+    audio_dir = content.get('audio_dir') or ''
+    audio_file = content.get('audio_file') or ''
+    if audio_dir:
+        p = Path(_resolve_path(audio_dir)).resolve()
+        # 老数据共享的「每日一篇/日期」目录不能整删
+        shared_daily_date_dir = (p.parent == daily_root
+                                 and re.fullmatch(r'\d{4}-\d{2}-\d{2}', p.name))
+        if not (p == daily_root or p == story_root or shared_daily_date_dir):
+            # 安全校验：只在 每日一篇/ 或 互动故事/ 目录之下的子目录才删
+            if daily_root in p.parents or story_root in p.parents:
+                shutil.rmtree(p, ignore_errors=True)
+                return
+    # 兜底：老条目只有 audio_file（或共享日期目录），只删条目自己的文件
+    if audio_file:
+        f = Path(_resolve_path(audio_file)).resolve()
+        if f.exists() and (daily_root in f.parents or story_root in f.parents):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+            # 顺带清理同名派生文件（mp3/srt/txt），不碰目录里其它条目的文件
+            stem = f.stem
+            for ext in ('.mp3', '.srt', '.txt'):
+                sibling = f.with_name(stem + ext)
+                try:
+                    if sibling.exists():
+                        sibling.unlink()
+                except OSError:
+                    pass
+            # 每日一篇还有 words.txt（词命中统计）
+            if item.get('type') == 'daily':
+                wf = f.with_name('words.txt')
+                try:
+                    if wf.exists():
+                        wf.unlink()
+                except OSError:
+                    pass
 
 
 def _history_delete(item_id: str) -> bool:
@@ -127,7 +217,8 @@ def _history_delete(item_id: str) -> bool:
         for i in items:
             if i['id'] == item_id:
                 removed = True
-                shutil.rmtree(Path(i['path']), ignore_errors=True)
+                _delete_attached_audio(i)          # 先删关联音频目录
+                shutil.rmtree(Path(i['path']), ignore_errors=True)  # 再删归档目录
             else:
                 new.append(i)
         if removed:
@@ -162,7 +253,8 @@ def _archive_daily(payload: dict):
 
 def _archive_story(payload: dict):
     payload.setdefault('date', date.today().isoformat())
-    payload.setdefault('title', payload.get('segments', [''])[0][:24] or '互动故事')
+    segs = payload.get('segments') or []
+    payload.setdefault('title', (segs[0][:24] if segs else '') or '互动故事')
     return _archive('story', payload)
 
 
@@ -193,7 +285,40 @@ def _trw_exclude(kind: str) -> list[str]:
     return seen
 
 
-app = FastAPI(title='CET-6 听力系统')
+# ---------- 启动预热 ----------
+
+def _warmup_models():
+    """后台预热：把 Kokoro TTS 与 wav2vec2 评分模型加载到 GPU/内存，避免首次使用长时间等待。"""
+    try:
+        t0 = time.time()
+        import tempfile
+        import soundfile as sf
+        warm_text = 'Warm up.'
+        tts = get_tts()
+        with _tts_lock:
+            audio = tts.synth(warm_text, voice=cfg['tts']['voice_main'])
+        wav = os.path.join(tempfile.gettempdir(), 'cet6_warmup.wav')
+        sf.write(wav, audio, 24000)
+        try:
+            scorer = P.get_scorer(cfg['speaking'].get('scorer', 'openpronounce'))
+            scorer.score(wav, warm_text)
+        finally:
+            try:
+                os.remove(wav)
+            except OSError:
+                pass
+        print(f'[warmup] TTS + 发音评分模型已就绪 (耗时 {time.time()-t0:.0f}s)', flush=True)
+    except Exception as e:
+        print(f'[warmup] 预热失败: {e}', flush=True)
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    threading.Thread(target=_warmup_models, daemon=True).start()
+    yield
+
+
+app = FastAPI(title='CET-6 听力系统', lifespan=_lifespan)
 
 
 def get_tts() -> TTSEngine:
@@ -220,6 +345,12 @@ def to_mp3(wav_path: str, mp3_path: str):
         import imageio_ffmpeg
         import subprocess
         ff = imageio_ffmpeg.get_ffmpeg_exe()
+        # 先删旧文件再写，避免覆盖失败残留旧录音（如浏览器正在播放锁定文件时静默降级）
+        try:
+            if os.path.exists(mp3_path):
+                os.remove(mp3_path)
+        except OSError:
+            pass
         subprocess.run([ff, '-y', '-i', wav_path, '-codec:a', 'libmp3lame',
                         '-b:a', '128k', mp3_path], capture_output=True, timeout=120)
         return Path(mp3_path).exists()
@@ -243,25 +374,27 @@ def srt_text(timeline: list[tuple[str, float, float]]) -> str:
     return '\n'.join(out)
 
 
-def synth_with_timeline(lines: list[tuple[str, str]]) -> tuple[np.ndarray, list[tuple[str, float, float]]]:
-    """合成脚本（对话或独白），返回 (audio, timeline)。行间 250ms 静音计入时间轴。"""
+def synth_with_timeline(lines: list[tuple[str, str]]):
+    """合成脚本（对话或独白），返回 (audio, timeline, word_timeline)。
+    timeline 为逐句 [(label, start, dur)]；word_timeline 为逐句逐词 [{'start','dur'}]（绝对秒）。"""
     tts = get_tts()
     sil = np.zeros(int(24000 * 0.25))
-    chunks, timeline = [], []
+    chunks, timeline, word_timeline = [], [], []
     pos = 0.0
     with _tts_lock:
         for speaker, text in lines:
-            audio = tts.synth_line(text, speaker)
+            audio, words = tts.synth_line_timed(text, speaker)
             if len(audio) == 0:
                 continue
             label = text if speaker == 'N' else f'{speaker}: {text}'
             timeline.append((label, pos, len(audio) / 24000))
+            word_timeline.append([{'start': round(pos + w[1], 3), 'dur': round(w[2] - w[1], 3)} for w in words])
             chunks.append(audio)
             chunks.append(sil.copy())
             pos += len(audio) / 24000 + 0.25
     if not chunks:
-        return np.zeros(0, dtype=np.float32), []
-    return np.concatenate(chunks)[:-len(sil)], timeline
+        return np.zeros(0, dtype=np.float32), [], []
+    return np.concatenate(chunks)[:-len(sil)], timeline, word_timeline
 
 
 def sse(event: str, data: dict) -> str:
@@ -298,7 +431,10 @@ def llm_stream(prompt: str):
                         d = json.loads(body)
                     except json.JSONDecodeError:
                         continue
-                    delta = d.get('choices', [{}])[0].get('delta', {})
+                    choices = d.get('choices') or []
+                    if not choices:
+                        continue  # 空 choices 防御：避免 [0] 越界
+                    delta = (choices[0] or {}).get('delta', {})
                     piece = delta.get('content')
                     if piece:
                         emitted = True
@@ -308,10 +444,18 @@ def llm_stream(prompt: str):
             # 已流出部分内容就不再重试（避免前端收到重复句子）
             if emitted or attempt >= client.max_retries:
                 raise
+        except httpx.HTTPStatusError as e:
+            # 临时 5xx（502/503/504）安全重试一次；4xx 不重试
+            if emitted or attempt >= client.max_retries or not (500 <= e.response.status_code < 600):
+                raise
 
 
-def story_stream_factory(session: dict, prompt: str):
-    """互动段落的 SSE 生成器：LLM 流 → 切句 → TTS → 逐句推送 → 选项 → done。"""
+def story_stream_factory(session: dict, prompt: str, choice: str | None = None):
+    """互动段落的 SSE 生成器：LLM 流 → 切句 → TTS → 逐句推送 → 选项 → done。
+
+    choice 非空时在「本段生成成功后」才记入 session['choices']，避免续写失败导致
+    选择与段落错位（choices 多一条而 segments 没多）。
+    """
     parser = E.SegmentStreamParser()
     idx = 0
     tts = get_tts()
@@ -323,26 +467,31 @@ def story_stream_factory(session: dict, prompt: str):
             for delta in llm_stream(prompt):
                 for sent in parser.feed(delta):
                     with _tts_lock:
-                        audio = tts.synth(sent)
+                        audio, words = tts.synth_timed(sent)
                     if len(audio) == 0:
                         continue
                     seg_sents.append((sent, audio))
-                    yield sse('sentence', {'i': idx, 'text': sent, 'audio': wav_b64(audio)})
+                    yield sse('sentence', {'i': idx, 'text': sent, 'audio': wav_b64(audio),
+                                           'word_timeline': [{'start': round(w[1], 3), 'dur': round(w[2] - w[1], 3)} for w in words]})
                     idx += 1
             result = parser.finish()
             # 尾句兜底（段末无空白的半句，parser.finish 已 flush 到 sents 但没合成过）
             flushed = [s for s in parser.sents if s not in [x[0] for x in seg_sents]]
             for sent in flushed:
                 with _tts_lock:
-                    audio = tts.synth(sent)
+                    audio, words = tts.synth_timed(sent)
                 if len(audio):
                     seg_sents.append((sent, audio))
-                    yield sse('sentence', {'i': idx, 'text': sent, 'audio': wav_b64(audio)})
+                    yield sse('sentence', {'i': idx, 'text': sent, 'audio': wav_b64(audio),
+                                           'word_timeline': [{'start': round(w[1], 3), 'dur': round(w[2] - w[1], 3)} for w in words]})
                     idx += 1
             # 会话记录
             session['segments'].append(result['segment'])
             session['segment_audio'].append([a for _, a in seg_sents])
             session['options'] = result['options']
+            # 生成成功后才记录选择，保证 choices 与 segments 对齐
+            if choice is not None:
+                session['choices'].append(choice)
             yield sse('options', {'options': result['options']})
             yield sse('done', {'segment': result['segment'], 'n_sentences': len(seg_sents)})
         except Exception as e:
@@ -364,12 +513,15 @@ def build_history(session: dict) -> str:
 def new_session_dir() -> Path:
     d = Path(_resolve_path(cfg['paths']['story_dir'])) / date.today().strftime('%Y-%m-%d')
     d.mkdir(parents=True, exist_ok=True)
-    n = 1
-    while (d / f'session-{n:02d}').exists():
-        n += 1
-    sd = d / f'session-{n:02d}'
-    sd.mkdir()
-    return sd
+    with _session_dir_lock:
+        n = 1
+        while True:
+            sd = d / f'session-{n:02d}'
+            try:
+                sd.mkdir(exist_ok=False)  # 存在则报错重试，避免并发拿到同一目录
+                return sd
+            except FileExistsError:
+                n += 1
 
 
 def _prune_sessions():
@@ -393,9 +545,10 @@ def _get_session(sid: str):
 def _check_online(base_url: str, api_key: str | None = None) -> bool:
     """探测端点在线状态，带短 TTL 缓存，避免每次加载模型栏都等待超时。"""
     now = time.time()
-    cached = _online_cache.get(base_url)
-    if cached and now - cached[0] < _online_cache_ttl:
-        return cached[1]
+    with _cache_lock:
+        cached = _online_cache.get(base_url)
+        if cached and now - cached[0] < _online_cache_ttl:
+            return cached[1]
     result = False
     try:
         headers = {'Authorization': f'Bearer {api_key}'} if api_key else None
@@ -403,7 +556,8 @@ def _check_online(base_url: str, api_key: str | None = None) -> bool:
         result = r.status_code == 200
     except Exception:
         result = False
-    _online_cache[base_url] = (now, result)
+    with _cache_lock:
+        _online_cache[base_url] = (now, result)
     return result
 
 
@@ -431,6 +585,10 @@ class ModelReq(BaseModel):
 
 @app.post('/api/model')
 def api_model_switch(req: ModelReq):
+    if req.model and req.profile == 'cloud':
+        allowed = cfg['llm']['cloud'].get('models', [])
+        if req.model not in allowed:
+            raise HTTPException(400, f'未知模型：{req.model}（可选：{", ".join(allowed)}）')
     try:
         client.switch(req.profile, req.model)
     except ValueError as e:
@@ -470,21 +628,28 @@ def api_daily():
         raise HTTPException(500, 'LLM 返回空文本')
     raw = raw.strip()
 
-    # 解析与合成
+    # 解析与合成（按句合成，时间轴与前端展示单元一一对应，供逐句高亮）
     if form['key'] == 'conversation':
         lines = parse_dialog_lines(raw)
         if not any(s == 'A' for s, _ in lines) or not any(s == 'B' for s, _ in lines):
             raise HTTPException(500, '对话格式解析失败（缺 A:/B: 行）')
+        sents = []
+        for spk, line in lines:
+            for s in split_sentences(line):
+                sents.append((spk, s))
+        lines = sents
     else:
         lines = [('N', s) for s in split_sentences(raw)]
     t0 = time.time()
-    audio, timeline = synth_with_timeline(lines)
+    audio, timeline, word_timeline = synth_with_timeline(lines)
     tts_dt = time.time() - t0
     if len(audio) == 0:
         raise HTTPException(500, 'TTS 合成失败')
 
-    # 归档
-    out_dir = Path(_resolve_path(cfg['paths']['daily_dir'])) / date.today().strftime('%Y-%m-%d')
+    # 归档：按「日期/时间戳_id」建唯一子目录，避免同日重复生成互相覆盖、也便于历史删除只删自己
+    out_dir = (Path(_resolve_path(cfg['paths']['daily_dir']))
+               / date.today().strftime('%Y-%m-%d')
+               / (time.strftime('%H%M%S') + '_' + uuid.uuid4().hex[:6]))
     out_dir.mkdir(parents=True, exist_ok=True)
     import soundfile as sf
     audio_path = out_dir / 'story.wav'
@@ -503,7 +668,10 @@ def api_daily():
     _archive_daily({
         'form': form['name'], 'date': date.today().isoformat(),
         'text': raw, 'units': E.build_display_units(raw, form['key']),
-        'audio_file': str(audio_path),
+        'audio_file': str(audio_path), 'audio_dir': str(out_dir),
+        'duration_s': round(len(audio) / 24000, 1),
+        'timeline': [{'start': round(t[1], 3), 'dur': round(t[2], 3)} for t in timeline],
+        'word_timeline': word_timeline,
         'title': f"{form['name']} · {date.today().isoformat()}",
     })
 
@@ -512,16 +680,31 @@ def api_daily():
         'audio_file': str(audio_path), 'duration_s': round(len(audio) / 24000, 1),
         'words_sampled': len(words), 'words_hit': len(hit), 'text': raw,
         'units': E.build_display_units(raw, form['key']),
+        'timeline': [{'start': round(t[1], 3), 'dur': round(t[2], 3)} for t in timeline],
+        'word_timeline': word_timeline,
     })
 
 @app.get('/api/daily/audio')
-def api_daily_audio(date: str):
+def api_daily_audio(date: str, dir: str | None = None):
     if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
         raise HTTPException(400, 'date 必须是 YYYY-MM-DD')
-    p = Path(_resolve_path(cfg['paths']['daily_dir'])) / date / 'story.wav'
+    base = Path(_resolve_path(cfg['paths']['daily_dir'])) / date
+    if dir:
+        p = Path(_resolve_path(dir)) / 'story.wav'
+        # 安全：dir 必须位于当日目录之下，防止任意路径读取
+        if base.resolve() not in p.resolve().parents and p.resolve() != base.resolve():
+            raise HTTPException(400, 'dir 不在当日目录内')
+    else:
+        # 兼容旧数据：优先最新的时间戳子目录，其次当日根目录直存的 story.wav
+        candidates = list(base.glob('*/story.wav'))
+        if (base / 'story.wav').exists():
+            candidates.append(base / 'story.wav')
+        if not candidates:
+            raise HTTPException(404, 'not generated yet')
+        p = max(candidates, key=lambda c: c.stat().st_mtime)
     if not p.exists():
         raise HTTPException(404, 'not generated yet')
-    return FileResponse(p, media_type='audio/wav')
+    return FileResponse(p, media_type='audio/wav', headers={'Cache-Control': 'no-store'})
 
 
 class TranslateReq(BaseModel):
@@ -534,17 +717,20 @@ def api_translate(req: TranslateReq):
     text = req.text.strip()
     if not text or len(text) > 500:
         raise HTTPException(400, 'text 为空或过长')
-    cached = _translate_cache.get(text)
+    with _cache_lock:
+        cached = _translate_cache.get(text)
     if cached is not None:
         return {'translation': cached, 'cached': True}
     raw = client.chat(E.build_translation_prompt(text))
     if not raw.strip():
         raise HTTPException(502, 'LLM 返回空翻译')
+    result = raw.strip()
     # 简单 FIFO 容量上限，防止缓存无限增长
-    if len(_translate_cache) >= TRANSLATE_CACHE_MAX:
-        _translate_cache.pop(next(iter(_translate_cache)), None)
-    _translate_cache[text] = raw.strip()
-    return {'translation': raw.strip(), 'cached': False}
+    with _cache_lock:
+        if len(_translate_cache) >= TRANSLATE_CACHE_MAX:
+            _translate_cache.pop(next(iter(_translate_cache)), None)
+        _translate_cache[text] = result
+    return {'translation': result, 'cached': False}
 
 
 # ---------- 互动模式 ----------
@@ -555,23 +741,10 @@ class ChoiceReq(BaseModel):
 
 
 def _story_vocab() -> str:
-    """互动织词开启时返回词汇织入备注，关闭时返回空串。day 用今天（与每日同步）。"""
-    if not _interactive_vocab:
-        return ''
+    """互动故事默认织入六级词（与每日一篇同步当天词块，无开关）。"""
     day = current_day(state)
     words = wordlist.sample(day, 25)
     return E.build_interactive_vocab_note([w for w, _ in words])
-
-
-class VocabReq(BaseModel):
-    enabled: bool
-
-
-@app.post('/api/story/vocab')
-def api_story_vocab(req: VocabReq):
-    global _interactive_vocab
-    _interactive_vocab = req.enabled
-    return {'enabled': _interactive_vocab}
 
 
 @app.post('/api/story/start')
@@ -585,9 +758,8 @@ def api_story_start():
     ip = cfg['interactive']
     prompt = E.INTERACTIVE_START_PROMPT.format(
         min_words=ip['segment_words_min'], max_words=ip['segment_words_max'])
-    # 织词开关开启时不破坏输出格式：词汇备注插在 Output format 之前
-    if _interactive_vocab:
-        prompt = prompt.replace('Output format', _story_vocab() + '\nOutput format')
+    # 默认织词（不破坏输出格式）：词汇备注插在 Output format 之前
+    prompt = prompt.replace('Output format', _story_vocab() + '\nOutput format')
     return StreamingResponse(story_stream_factory(session, prompt),
                              media_type='text/event-stream',
                              headers={'X-Session-Id': sid})
@@ -599,13 +771,11 @@ def api_story_choose(req: ChoiceReq):
     if not session:
         raise HTTPException(404, 'session not found')
     ip = cfg['interactive']
-    session['choices'].append(req.choice)
     prompt = E.INTERACTIVE_CONTINUE_PROMPT.format(
         history=build_history(session), choice=req.choice,
         min_words=ip['segment_words_min'], max_words=ip['segment_words_max'])
-    if _interactive_vocab:
-        prompt = prompt.replace('Output format', _story_vocab() + '\nOutput format')
-    return StreamingResponse(story_stream_factory(session, prompt),
+    prompt = prompt.replace('Output format', _story_vocab() + '\nOutput format')
+    return StreamingResponse(story_stream_factory(session, prompt, choice=req.choice),
                              media_type='text/event-stream')
 
 
@@ -638,6 +808,7 @@ def api_story_end(req: ChoiceReq):
     _archive_story({
         'segments': session['segments'],
         'choices': session['choices'],
+        'audio_dir': str(session['dir']),
         'title': (session['segments'][0][:24] if session['segments'] else '互动故事'),
     })
     return JSONResponse({'dir': str(session['dir']),
@@ -676,21 +847,26 @@ def api_trw_generate(req: TrwReq):
 def api_trw_grade(req: TrwReq):
     if req.type not in ('writing', 'translation'):
         raise HTTPException(400, 'type 必须是 writing 或 translation')
-    if not req.answer.strip():
+    answer = req.answer.strip()
+    if not answer:
         raise HTTPException(400, '答案为空')
     task = req.task or {}
     hid = task.get('_history_id')
     # 去掉内部字段，避免污染归档的 task
     task = {k: v for k, v in task.items() if not k.startswith('_')}
-    raw = client.chat(E.build_trw_grade_prompt(req.type, task, req.answer))
+    raw = client.chat(E.build_trw_grade_prompt(req.type, task, answer))
     if not raw.strip():
         raise HTTPException(502, '批改返回空文本')
     try:
         result = E.parse_trw_grade(raw, req.type)
     except ValueError as e:
         raise HTTPException(502, f'批改解析失败：{e}')
-    payload = {'type': req.type, 'task': task, 'answer': req.answer,
+    payload = {'type': req.type, 'task': task, 'answer': answer,
                'grade': result, 'status': 'graded'}
+    if hid:
+        existing = _history_content(hid)
+        if existing.get('sentence_grades'):
+            payload['sentence_grades'] = existing['sentence_grades']  # 保留单句模式的批改
     payload.setdefault('title', _trw_title(payload))
     # 有出题条目的历史 id 就原地更新（覆盖为已批改），否则（如旧客户端/测试）新归档一条
     if not (hid and _history_update(hid, payload)):
@@ -698,12 +874,453 @@ def api_trw_grade(req: TrwReq):
     return JSONResponse({'type': req.type, **result})
 
 
+# ---------- 翻译单句模式 ----------
+
+class SentenceRefReq(BaseModel):
+    sentence: str
+
+
+@app.post('/api/trw/sentence/ref')
+def api_trw_sentence_ref(req: SentenceRefReq):
+    """单句参考译文：中文句子 → 英文参考译文（调用当前生成模型）。"""
+    sentence = req.sentence.strip()
+    if not sentence or len(sentence) > 300:
+        raise HTTPException(400, '句子为空或过长')
+    raw = client.chat(E.build_trw_sentence_ref_prompt(sentence))
+    if not raw.strip():
+        raise HTTPException(502, '参考译文返回空文本')
+    return JSONResponse({'reference': raw.strip()})
+
+
+class SentenceGradeReq(BaseModel):
+    exercise_id: str = ''        # 出题条目 id（缺省不归档）
+    sentence: str
+    answer: str
+    index: int | None = None     # 句子序号（归档用）
+
+
+@app.post('/api/trw/sentence/grade')
+def api_trw_sentence_grade(req: SentenceGradeReq):
+    """单句批改：打分 + 点评 + 参考译文，并增量归档到对应出题条目的 sentence_grades。"""
+    sentence = req.sentence.strip()
+    answer = req.answer.strip()
+    if not sentence or len(sentence) > 300:
+        raise HTTPException(400, '句子为空或过长')
+    if not answer:
+        raise HTTPException(400, '答案为空')
+    raw = client.chat(E.build_trw_sentence_grade_prompt(sentence, answer))
+    if not raw.strip():
+        raise HTTPException(502, '批改返回空文本')
+    try:
+        result = E.parse_trw_sentence_grade(raw)
+    except ValueError as e:
+        raise HTTPException(502, f'批改解析失败：{e}')
+    if req.exercise_id:
+        item = _history_get(req.exercise_id)
+        if item and item.get('type') == 'translation':
+            key = str(req.index) if req.index is not None else str(len(item.get('sentence_grades') or {}))
+            payload = {
+                'type': 'translation',
+                'task': item.get('task') or {},
+                'answer': item.get('answer'),        # 保留整段模式的答案
+                'grade': item.get('grade'),          # 保留整段模式的批改
+                'sentence_grades': dict(item.get('sentence_grades') or {}),
+                'status': 'assessed',
+            }
+            payload = {k: v for k, v in payload.items() if v is not None}
+            payload['sentence_grades'][key] = {'sentence': sentence, 'answer': answer, 'grade': result}
+            payload['title'] = _trw_title(payload)
+            _history_update(req.exercise_id, payload)
+    return JSONResponse(result)
+
+
+# ---------- 口语练习 ----------
+
+@app.post('/api/speaking/generate')
+def api_speaking_generate():
+    """生成一篇朗读题：LLM 出短文 → 逐句切分 → 逐句合成范本音频，出题即归档。"""
+    sp = cfg['speaking']
+    day = current_day(state)
+    words = wordlist.sample(day, sp['sample_n'])
+    prompt = E.build_speaking_prompt([w for w, _ in words], sp['passage_words'])
+    raw = client.chat(prompt)
+    if not raw.strip():
+        raise HTTPException(500, 'LLM 返回空文本')
+    raw = raw.strip()
+    sents = split_sentences(raw)
+    if not sents:
+        raise HTTPException(500, '短文切句失败')
+    tts = get_tts()
+    sent_audio = []
+    sent_word_timelines = []
+    with _tts_lock:
+        for s in sents:
+            a, words_ts = tts.synth_timed(s, voice=cfg['tts']['voice_main'])
+            if len(a) == 0:
+                raise HTTPException(500, 'TTS 合成失败')
+            sent_audio.append(a)
+            sent_word_timelines.append([{'start': round(w[1], 3), 'dur': round(w[2] - w[1], 3)} for w in words_ts])
+    hid = _archive('speaking', {
+        'type': 'speaking',
+        'text': raw,
+        'target_words': [w for w, _ in words],
+        'sentences': [{'index': i, 'text': s, 'word_timeline': sent_word_timelines[i]} for i, s in enumerate(sents)],
+        'status': 'generated',
+        'title': raw[:24] or '口语朗读',
+    })
+    entry_dir = _history_dir() / 'speaking' / hid
+    import soundfile as sf
+    for i, a in enumerate(sent_audio):
+        wav = entry_dir / f'ref_{i}.wav'
+        sf.write(wav, a, 24000)
+        to_mp3(str(wav), str(entry_dir / f'ref_{i}.mp3'))
+    return JSONResponse({
+        'id': hid,
+        'text': raw,
+        'words': [w for w, _ in words],
+        'sentences': [
+            {'index': i, 'text': s, 'audio_url': f'/api/speaking/audio?id={hid}&kind=ref&i={i}',
+             'word_timeline': sent_word_timelines[i]}
+            for i, s in enumerate(sents)
+        ],
+    })
+
+
+class SpeakingAssessReq(BaseModel):
+    exercise_id: str
+    audio: str                      # base64 编码录音
+    audio_mime: str = 'audio/webm'  # 录音容器格式（webm/opus/ogg/wav...）
+    text: str = ''                  # 单句评分时的句子文本（缺省则评整篇）
+    sentence_index: int | None = None  # 单句序号（用于归档与录音文件命名）
+
+
+@app.post('/api/speaking/assess')
+def api_speaking_assess(req: SpeakingAssessReq):
+    """评测朗读：转码 → OpenPronounce 音素级评分 → 保存录音 → 归档更新。
+
+    单句评分（sentence_index 提供）时评 req.text，结果写 sentence_scores[i]；
+    否则评整篇，结果写 score。
+    """
+    item = _history_get(req.exercise_id)
+    if not item or item.get('type') != 'speaking':
+        raise HTTPException(404, '口语题不存在')
+    full_text = (item.get('text') or '').strip()
+    ref_text = (req.text or '').strip() or full_text
+    if not ref_text:
+        raise HTTPException(400, '朗读内容为空')
+    try:
+        raw = base64.b64decode(req.audio)
+    except Exception:
+        raise HTTPException(400, '录音数据无效')
+    if len(raw) < 2000:  # 过短录音直接拒（约 <0.1s），避免无意义评测
+        raise HTTPException(400, '录音过短，请重新朗读')
+    print(f'[speaking-assess] start id={req.exercise_id} idx={req.sentence_index} raw={len(raw)}B mime={req.audio_mime}', flush=True)
+    try:
+        wav_path = P.prepare_audio(raw, req.audio_mime)
+    except Exception as e:
+        raise HTTPException(500, f'音频转码失败：{e}')
+    entry_dir = Path(item['path'])
+    idx = req.sentence_index
+    user_name = f'user_{idx}.mp3' if idx is not None else 'user.mp3'
+    saved_name = user_name
+    try:
+        scorer = P.get_scorer(cfg['speaking'].get('scorer', 'openpronounce'))
+        result = scorer.score(wav_path, ref_text)
+        to_mp3(wav_path, str(entry_dir / user_name))
+        if not (entry_dir / user_name).exists():
+            # ffmpeg/libmp3lame 失败时保留 WAV，回放接口会 fallback 到 .wav
+            import shutil
+            try:
+                shutil.copyfile(wav_path, str(entry_dir / (user_name[:-4] + '.wav')))
+                saved_name = user_name[:-4] + '.wav'
+            except Exception:
+                pass  # 兜底 WAV 也失败时不影响评分结果返回
+    except Exception as e:
+        print(f'[speaking-assess] ERROR {e}', flush=True)
+        raise HTTPException(500, f'发音评测失败：{e}')
+    finally:
+        try:
+            os.remove(wav_path)
+        except OSError:
+            pass
+    print(f'[speaking-assess] done idx={req.sentence_index} overall={result.get("overall")}', flush=True)
+    payload = {
+        'type': 'speaking',
+        'text': full_text,
+        'target_words': item.get('target_words', []),
+        'sentences': item.get('sentences', []),
+        'sentence_scores': dict(item.get('sentence_scores') or {}),
+        'score': item.get('score'),               # 保留整篇评分（单句评分时不丢失）
+        'audio_file': item.get('audio_file'),     # 保留整篇录音路径
+        'status': 'assessed',
+        'title': full_text[:24] or '口语朗读',
+    }
+    payload = {k: v for k, v in payload.items() if v is not None}
+    if idx is not None:
+        payload['sentence_scores'][str(idx)] = result
+    else:
+        payload['score'] = result
+        payload['audio_file'] = str(entry_dir / saved_name)
+    if not _history_update(req.exercise_id, payload):
+        _archive('speaking', payload)
+    return JSONResponse({'id': req.exercise_id, 'sentence_index': idx, **result})
+
+
+@app.get('/api/speaking/audio')
+def api_speaking_audio(id: str, kind: str = 'user', i: int | None = None):
+    """回放口语录音/范本。kind: user=用户朗读, ref=范本；i=句子序号（缺省为整篇）。"""
+    item = _history_get(id)
+    if not item or item.get('type') != 'speaking':
+        raise HTTPException(404, 'not found')
+    if kind == 'ref':
+        if i is None:
+            # 范本只按句生成 ref_0.mp3 / ref_1.mp3...，从不生成整篇 ref.mp3
+            raise HTTPException(400, '整篇范本未生成，请指定 i 播放单句范本')
+        fname = f'ref_{i}.mp3'
+    else:
+        fname = f'user_{i}.mp3' if i is not None else 'user.mp3'
+    p = Path(item['path']) / fname
+    if not p.exists():
+        # to_mp3 失败时回退到已保留的 WAV（口语回放不能因 ffmpeg 失败而 404）
+        p_wav = Path(item['path']) / (fname[:-4] + '.wav')
+        if p_wav.exists():
+            return FileResponse(p_wav, media_type='audio/wav', headers={'Cache-Control': 'no-store'})
+        raise HTTPException(404, 'audio not found')
+    # no-store：同句重新评分会覆盖同名录音文件，禁止浏览器缓存旧录音
+    return FileResponse(p, media_type='audio/mpeg', headers={'Cache-Control': 'no-store'})
+
+
+# ---------- 单词朗读（口语逐词点读） ----------
+
+_word_tts_cache: dict = {}
+WORD_TTS_CACHE_MAX = 300
+
+
+@app.get('/api/tts/word')
+def api_tts_word(text: str):
+    """Kokoro 朗读单词/短语/短句（带内存缓存），供逐词点读与笔记本回放。"""
+    text = (text or '').strip().lower()
+    if not text or len(text) > 500 or not re.fullmatch(r"[a-z0-9\s.,;:!?'\-]+", text):
+        raise HTTPException(400, 'text 不合法')
+    with _cache_lock:
+        wav = _word_tts_cache.get(text)
+    if wav is None:
+        tts = get_tts()
+        with _tts_lock:
+            audio = tts.synth(text, voice=cfg['tts']['voice_main'])
+        if len(audio) == 0:
+            raise HTTPException(500, 'TTS 合成失败')
+        import soundfile as sf
+        buf = io.BytesIO()
+        sf.write(buf, audio, 24000, format='WAV', subtype='PCM_16')
+        wav = buf.getvalue()
+        with _cache_lock:  # FIFO 容量上限
+            if len(_word_tts_cache) >= WORD_TTS_CACHE_MAX:
+                _word_tts_cache.pop(next(iter(_word_tts_cache)), None)
+            _word_tts_cache[text] = wav
+    return Response(content=wav, media_type='audio/wav', headers={'Cache-Control': 'no-store'})
+
+
+# ---------- 笔记本 ----------
+
+_nb_lock = threading.RLock()  # 可重入：路由持锁后 _save_notebook 再次加锁不会死锁
+_nb_path = os.path.join(sys_dir, '笔记本.json')
+_NB_KEYS = ('words', 'patterns', 'writing')
+word_meaning_map = {w.lower(): m for w, m in wordlist.entries}  # 词表释义速查（收录自动填释义）
+_word_meaning_cache: dict = {}   # 非词表词的 AI 释义缓存
+WORD_MEANING_CACHE_MAX = 1000
+
+
+def _resolve_meaning(word: str) -> str:
+    """词义：词表 → 内存缓存 → AI 翻译（气泡翻译与收录共享）。"""
+    w = word.lower()
+    m = word_meaning_map.get(w)
+    if m:
+        return m
+    with _cache_lock:
+        m = _word_meaning_cache.get(w)
+    if m:
+        return m
+    try:
+        m = (client.chat(E.build_word_meaning_prompt(word)) or '').strip()
+    except Exception:
+        m = ''
+    if not m:
+        m = '（未查到释义）'
+    with _cache_lock:  # FIFO
+        if len(_word_meaning_cache) >= WORD_MEANING_CACHE_MAX:
+            _word_meaning_cache.pop(next(iter(_word_meaning_cache)), None)
+        _word_meaning_cache[w] = m
+    return m
+
+
+def _load_notebook() -> dict:
+    try:
+        data = json.loads(Path(_nb_path).read_text(encoding='utf-8'))
+    except Exception:
+        data = {}
+    nb = {}
+    for k in _NB_KEYS:
+        nb[k] = data.get(k) if isinstance(data.get(k), list) else []
+    return nb
+
+
+def _save_notebook(nb: dict):
+    with _nb_lock:
+        tmp = Path(_nb_path + '.tmp')
+        tmp.write_text(json.dumps(nb, ensure_ascii=False, indent=2), encoding='utf-8')
+        tmp.replace(_nb_path)
+
+
+notebook = _load_notebook()
+
+
+class NbWordReq(BaseModel):
+    word: str
+    context: str = ''
+    source: str = '互动故事'
+
+
+class WordTranslateReq(BaseModel):
+    word: str
+
+
+@app.post('/api/word/translate')
+def api_word_translate(req: WordTranslateReq):
+    """单词中文释义（供逐词气泡的「翻译」，默认开启）。"""
+    word = req.word.strip()
+    if not word or len(word) > 60 or not re.fullmatch(r"[a-zA-Z0-9'\-]+", word):
+        raise HTTPException(400, 'word 不合法')
+    return JSONResponse({'word': word, 'meaning': _resolve_meaning(word)})
+
+
+@app.post('/api/notebook/word')
+def api_notebook_word(req: NbWordReq):
+    """收录生词：自动填释义（词表命中直接用，否则 AI 翻译）。"""
+    word = req.word.strip().lower()
+    if not word or len(word) > 60 or not re.fullmatch(r"[a-z0-9'\-]+", word):
+        raise HTTPException(400, 'word 不合法')
+    context = (req.context or '').strip()
+    if len(context) > 2000:
+        raise HTTPException(400, 'context 过长')
+    meaning = _resolve_meaning(word)  # AI 释义较慢，放锁外，避免长时间占用 notebook 锁
+    with _nb_lock:
+        for e in notebook['words']:
+            if (e.get('word') or '').lower() == word:
+                return JSONResponse({'duplicate': True, 'entry': e})
+        entry = {'id': uuid.uuid4().hex[:12], 'word': word, 'meaning': meaning,
+                 'context': context, 'source': (req.source or '互动故事').strip(),
+                 'date': date.today().isoformat()}
+        notebook['words'].append(entry)
+        _save_notebook(notebook)
+    return JSONResponse({'duplicate': False, 'entry': entry})
+
+
+class NbPatternReq(BaseModel):
+    zh: str
+    en: str
+    want_explain: bool = False
+
+
+@app.post('/api/notebook/pattern')
+def api_notebook_pattern(req: NbPatternReq):
+    """收录翻译句式：中文原句 + 参考译文，可选 AI 句式解读。"""
+    zh = req.zh.strip()
+    en = req.en.strip()
+    if not zh or not en:
+        raise HTTPException(400, '中英文都不能为空')
+    if len(zh) > 2000 or len(en) > 2000:
+        raise HTTPException(400, '句式内容过长（中英各 ≤ 2000 字符）')
+    explain = ''
+    if req.want_explain:
+        try:
+            raw = client.chat(E.build_pattern_explain_prompt(zh, en))
+            explain = raw.strip()
+        except Exception:
+            explain = ''
+    with _nb_lock:
+        for e in notebook['patterns']:
+            if (e.get('zh') or '') == zh:
+                return JSONResponse({'duplicate': True, 'entry': e})
+        entry = {'id': uuid.uuid4().hex[:12], 'zh': zh, 'en': en, 'explain': explain,
+                 'source': '翻译练习', 'date': date.today().isoformat()}
+        notebook['patterns'].append(entry)
+        _save_notebook(notebook)
+    return JSONResponse({'duplicate': False, 'entry': entry})
+
+
+class NbWritingReq(BaseModel):
+    text: str
+
+
+@app.post('/api/notebook/writing')
+def api_notebook_writing(req: NbWritingReq):
+    """收录写作好段/固定表达（范文段落）。"""
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(400, '内容为空')
+    if len(text) > 5000:
+        raise HTTPException(400, '内容过长（≤ 5000 字符）')
+    with _nb_lock:
+        for e in notebook['writing']:
+            if (e.get('text') or '') == text:
+                return JSONResponse({'duplicate': True, 'entry': e})
+        entry = {'id': uuid.uuid4().hex[:12], 'text': text, 'source': '写作练习',
+                 'date': date.today().isoformat()}
+        notebook['writing'].append(entry)
+        _save_notebook(notebook)
+    return JSONResponse({'duplicate': False, 'entry': entry})
+
+
+@app.get('/api/notebook')
+def api_notebook():
+    with _nb_lock:
+        return JSONResponse({k: list(notebook[k]) for k in _NB_KEYS})
+
+
+class NbUpdateReq(BaseModel):
+    category: str
+    id: str
+    entry: dict
+
+
+@app.post('/api/notebook/update')
+def api_notebook_update(req: NbUpdateReq):
+    """编辑笔记本条目（保留 id/source/date，其余字段覆盖）。"""
+    if req.category not in _NB_KEYS:
+        raise HTTPException(400, 'category 不合法')
+    with _nb_lock:
+        for i, e in enumerate(notebook[req.category]):
+            if e.get('id') == req.id:
+                new_entry = dict(req.entry)
+                new_entry['id'] = e.get('id')
+                new_entry['source'] = e.get('source') or new_entry.get('source') or ''
+                new_entry['date'] = e.get('date') or new_entry.get('date') or date.today().isoformat()
+                notebook[req.category][i] = new_entry
+                _save_notebook(notebook)
+                return JSONResponse({'updated': True, 'entry': new_entry})
+    raise HTTPException(404, 'entry not found')
+
+
+@app.delete('/api/notebook')
+def api_notebook_delete(category: str, id: str):
+    if category not in _NB_KEYS:
+        raise HTTPException(400, 'category 不合法')
+    with _nb_lock:
+        before = len(notebook[category])
+        notebook[category] = [e for e in notebook[category] if e.get('id') != id]
+        if len(notebook[category]) == before:
+            raise HTTPException(404, 'entry not found')
+        _save_notebook(notebook)
+    return {'deleted': True}
+
+
 # ---------- 历史归档 API ----------
 
 @app.get('/api/history')
 def api_history(type: str):
-    if type not in ('daily', 'story', 'writing', 'translation'):
-        raise HTTPException(400, 'type 必须是 daily|story|writing|translation')
+    if type not in ('daily', 'story', 'writing', 'translation', 'speaking'):
+        raise HTTPException(400, 'type 必须是 daily|story|writing|translation|speaking')
     return {'items': _history_list(type)}
 
 
@@ -726,7 +1343,7 @@ def api_history_delete(id: str):
 
 @app.get('/')
 def index():
-    return FileResponse(os.path.join(sys_dir, '前端.html'))
+    return FileResponse(os.path.join(sys_dir, '前端.html'), headers={'Cache-Control': 'no-store'})
 
 
 def main():

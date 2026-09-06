@@ -65,6 +65,26 @@ Output format: {f['format_spec']}
 Output the text only. No word count, no notes, no explanation."""
 
 
+def build_speaking_prompt(words: list[str], length: int) -> str:
+    """口语朗读题：CET-6 难度短文，织入采样词，纯文本输出（无标题无标注）。"""
+    word_list = ', '.join(words)
+    return f"""You are writing English reading-aloud material for a Chinese student preparing for the CET-6 speaking test.
+
+Write a short passage of about {length} words, suitable for reading aloud, at CET-6 difficulty.
+
+Vocabulary requirement:
+- Weave as many of these CET-6 words into the passage as fits naturally: {word_list}
+- Never force a word where it reads awkward; skip it instead
+- You may inflect them (plural / past tense / etc.)
+
+Style requirements:
+- Sentence length mostly 12-20 words; natural spoken rhythm, easy to read aloud
+- No slang, no internet abbreviations, no hard-to-pronounce proper nouns
+- One clear topic with a beginning, middle and end
+
+Output the passage only, as plain text. No title, no word count, no notes, no explanation."""
+
+
 INTERACTIVE_START_PROMPT = """You are an interactive storyteller for one reader.
 
 Begin a NEW story with an opening segment of {min_words}-{max_words} words in English.
@@ -144,17 +164,13 @@ class LLMClient:
         return {'active': self.active, 'model': self.p['model'],
                 'base_url': self.p['base_url']}
 
-    def chat(self, prompt: str, system: str | None = None, stream: bool = False):
-        messages = []
-        if system:
-            messages.append({'role': 'system', 'content': system})
-        messages.append({'role': 'user', 'content': prompt})
+    def chat(self, prompt: str):
         payload = {
             'model': self.p['model'],
-            'messages': messages,
+            'messages': [{'role': 'user', 'content': prompt}],
             'temperature': self.temperature,
             'max_tokens': self.max_tokens,
-            'stream': stream,
+            'stream': False,
         }
         if self.no_think and self.active == 'local':
             payload['chat_template_kwargs'] = {'enable_thinking': False}
@@ -164,25 +180,26 @@ class LLMClient:
             payload['thinking'] = {'type': 'disabled'}
         headers = {'Authorization': f"Bearer {self.p.get('api_key', 'local')}"}
         url = self.p['base_url'].rstrip('/') + '/chat/completions'
-        if stream:
-            return httpx.stream('POST', url, json=payload, headers=headers, timeout=self.timeout)
-        last_exc = None
         for attempt in range(self.max_retries + 1):
             try:
                 r = httpx.post(url, json=payload, headers=headers, timeout=self.timeout)
                 r.raise_for_status()
-                data = r.json()
-                return self._content(data)
-            except httpx.TransportError as e:
-                # 连接失败/超时重试；HTTP 4xx/5xx 由 raise_for_status 抛出，不在此重试
-                last_exc = e
+                return self._content(r.json())
+            except httpx.TransportError:
+                # 连接失败/超时重试
                 if attempt >= self.max_retries:
                     raise
-        raise last_exc
+            except httpx.HTTPStatusError as e:
+                # 临时 5xx（502/503/504）安全重试一次；4xx 不重试
+                if attempt >= self.max_retries or not (500 <= e.response.status_code < 600):
+                    raise
 
     @staticmethod
     def _content(data: dict) -> str:
-        msg = data['choices'][0]['message']
+        choices = data.get('choices') or []
+        if not choices:
+            return ''
+        msg = (choices[0] or {}).get('message') or {}
         # llama.cpp / LiteLLM 可能把思考内容放 reasoning_content，正文放 content
         return msg.get('content') or ''
 
@@ -323,6 +340,59 @@ class SegmentStreamParser:
 _JSON_RE = re.compile(r'\{.*\}', re.DOTALL)
 
 
+def _balanced_json(text: str, start: int):
+    """从 start 处的 '{' 起，用字符串感知的方式找配对的 '}'（容忍字符串内出现 { 或 }）。"""
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
+def _escape_newlines_in_strings(text: str) -> str:
+    """把「字符串值内部」的裸换行转义为 \\n（LLM 常把长字段写成多行，破坏 JSON）。"""
+    out = []
+    in_str = False
+    escape = False
+    for ch in text:
+        if in_str:
+            if escape:
+                out.append(ch)
+                escape = False
+            elif ch == '\\':
+                out.append(ch)
+                escape = True
+            elif ch == '"':
+                out.append(ch)
+                in_str = False
+            elif ch == '\n' or ch == '\r':
+                out.append('\\n')
+            else:
+                out.append(ch)
+        else:
+            if ch == '"':
+                in_str = True
+            out.append(ch)
+    return ''.join(out)
+
+
 def parse_dialog_lines(text: str) -> list[tuple[str, str]]:
     """解析 "A: xxx / B: xxx" 对话行为 (speaker, line)；非对话行归为旁白 'N'。"""
     out = []
@@ -397,6 +467,33 @@ class TTSEngine:
         voice_map = {'A': self.cfg['voice_main'], 'B': self.cfg['voice_male'], 'N': self.cfg['voice_main']}
         return self.synth(text, voice_map.get(speaker, self.cfg['voice_main']))
 
+    def synth_timed(self, text: str, voice: str | None = None, speed: float | None = None):
+        """合成并返回 (audio, word_timings)。word_timings 为 [(word, start_ts, end_ts)]（秒），
+        词级时间戳来自 kokoro 内部音素对齐（已按 speed 调整）。"""
+        voice = voice or self.cfg['voice_main']
+        speed = speed or self.cfg['speed']
+        chunks, words = [], []
+        offset = 0.0
+        for res in self.pipeline(text, voice=voice, speed=speed):
+            audio = self.np.asarray(res.audio) if res.audio is not None else self.np.zeros(0, dtype=self.np.float32)
+            if len(audio) == 0:
+                continue
+            dur = len(audio) / 24000.0
+            for t in (res.tokens or []):
+                st, en = getattr(t, 'start_ts', None), getattr(t, 'end_ts', None)
+                if t.text and st is not None and en is not None:
+                    words.append((t.text, offset + float(st), offset + float(en)))
+            chunks.append(audio)
+            offset += dur
+        if not chunks:
+            return self.np.zeros(0, dtype=self.np.float32), []
+        return self.np.concatenate(chunks), words
+
+    def synth_line_timed(self, text: str, speaker: str):
+        """synth_line + 词级时间戳版本。"""
+        voice_map = {'A': self.cfg['voice_main'], 'B': self.cfg['voice_male'], 'N': self.cfg['voice_main']}
+        return self.synth_timed(text, voice_map.get(speaker, self.cfg['voice_main']))
+
     def synth_script(self, lines: list[tuple[str, str]]) -> 'np.ndarray':
         """合成整段脚本（对话或独白），行间 250ms 停顿。"""
         sil = self.np.zeros(int(24000 * 0.25), dtype=self.np.float32)
@@ -416,21 +513,39 @@ class TTSEngine:
 def load_state(path: str) -> dict:
     p = Path(path)
     if p.exists():
-        return json.loads(p.read_text(encoding='utf-8'))
+        try:
+            data = json.loads(p.read_text(encoding='utf-8'))
+            # 结构校验：必须是含非空 start_date 的 dict，否则走损坏备份流程
+            # （防 {} / [] / {"start_date": ""} 原样返回后 current_day 崩溃）
+            if not (isinstance(data, dict) and data.get('start_date')):
+                raise ValueError('state.json 结构非法（期望 {"start_date": "YYYY-MM-DD"}）')
+            return data
+        except Exception:
+            # 文件损坏/为空/结构非法时备份并重建，避免服务启动失败
+            try:
+                backup = p.with_suffix('.json.corrupt-' + time.strftime('%Y%m%d%H%M%S'))
+                p.replace(backup)
+                print(f'[state] state.json 损坏，已备份为 {backup.name}', flush=True)
+            except Exception:
+                pass
     state = {'start_date': time.strftime('%Y-%m-%d')}  # 首次使用当天为 day 0
     save_state(path, state)
     return state
 
 
 def save_state(path: str, state: dict):
-    Path(path).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+    """原子写 state.json：先写临时文件再替换，避免中断留下半截 JSON。"""
+    p = Path(path)
+    tmp = p.with_suffix('.json.tmp')
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+    tmp.replace(p)
 
 
 def current_day(state: dict) -> int:
-    """day = 今天 - start_date，与日历同步，无需手动推进。"""
+    """day = 今天 - start_date，与日历同步，无需手动推进。时钟拨早时下限为 0。"""
     import datetime
     start = datetime.date.fromisoformat(state['start_date'])
-    return (datetime.date.today() - start).days
+    return max((datetime.date.today() - start).days, 0)
 
 
 # ---------- 配置加载 ----------
@@ -450,24 +565,23 @@ def init_profiles(cfg: dict):
 
 def _read_deepseek_key() -> str:
     """读 DeepSeek 官方 API key（前端填写、存到 deepseek_key.txt）。"""
-    import glob
-    candidates = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deepseek_key.txt'),
-    ]
-    for path in candidates:
-        try:
-            k = Path(path).read_text(encoding='utf-8').strip()
-            if k:
-                return k
-        except FileNotFoundError:
-            continue
-    return ''
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deepseek_key.txt')
+    try:
+        k = Path(path).read_text(encoding='utf-8').strip()
+        return k
+    except FileNotFoundError:
+        return ''
 
 
 def save_deepseek_key(key: str):
-    """保存 DeepSeek API key 到 deepseek_key.txt（不硬编码，便于前端填写持久化）。"""
+    """保存 DeepSeek API key 到 deepseek_key.txt（不硬编码，便于前端填写持久化）。
+
+    原子写：先写临时文件再替换，避免断电/异常留下空文件。
+    """
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deepseek_key.txt')
-    Path(path).write_text(key.strip(), encoding='utf-8')
+    tmp = path + '.tmp'
+    Path(tmp).write_text(key.strip(), encoding='utf-8')
+    Path(tmp).replace(path)
 
 
 def load_config(path: str | None = None) -> dict:
@@ -553,10 +667,14 @@ def build_trw_grade_prompt(kind: str, task: dict, answer: str) -> str:
                 f'写作要求：{req or "（无）"}\n'
                 f'画面/图表描述：{img or "（无）"}\n'
                 f'考生作文：\n{answer}\n'
+                f'评分规则：\n'
+                f'- 若考生作文没有任何实质内容（例如只有标点符号、空白、几个零散单词、或明显乱写），'
+                f'score 直接给 0 分，tier 写"无实质内容"，paras 返回空数组 []（严禁虚构段落或点评）\n'
+                f'- 只有存在真实作文内容时，才按档位打分并给逐段批注\n'
                 f'请输出：\n'
                 f'- score：分数（0-15 整数）\n'
                 f'- tier：档位说明（为什么这档）\n'
-                f'- paras：逐段批注数组，每段 {{para, comment}}（comment 含优点/问题/改法）\n'
+                f'- paras：逐段批注数组，每段 {{para, comment}}（comment 含优点/问题/改法，须针对考生实际所写）\n'
                 f'- model：同题范文（150-180 词，六级水平）\n'
                 f'只输出 JSON：{{"score":0,"tier":"","paras":[],"model":""}}')
     material = task.get('material', '')
@@ -564,6 +682,10 @@ def build_trw_grade_prompt(kind: str, task: dict, answer: str) -> str:
             f'评分标准：{_CET6_SCALE}\n'
             f'原文（中文）：{material}\n'
             f'考生译文：\n{answer}\n'
+            f'评分规则：\n'
+            f'- 若考生译文没有任何实质内容（例如只有标点符号、空白、几个零散单词、或明显乱写），'
+            f'score 直接给 0 分，tier 写"无实质内容"，reviews 返回空数组 []（严禁虚构点评）\n'
+            f'- 只有存在真实译文内容时，才按档位打分并逐句点评\n'
             f'请输出：\n'
             f'- reference：标准参考译文（英文）\n'
             f'- reviews：逐句点评数组，每句 {{sentence, reference, comment}}（考生句 vs 参考句，挑词汇/语法/地道度）\n'
@@ -572,49 +694,70 @@ def build_trw_grade_prompt(kind: str, task: dict, answer: str) -> str:
             f'只输出 JSON：{{"reference":"","reviews":[],"score":0,"tier":""}}')
 
 def _extract_json(raw: str) -> dict:
-    """容错提取首个 JSON 对象（容忍 ```json 包裹与多余文本）。"""
+    """容错提取首个 JSON 对象（容忍 ```json 包裹、多余文本、字符串内裸换行/括号）。"""
     text = strip_think(raw)
     # 剥掉 ```json ... ``` 包裹
     fence = re.search(r'```(?:json)?\s*([\s\S]*?)```', text)
     if fence:
         text = fence.group(1)
-    m = _JSON_RE.search(text)
-    if not m:
+    start = text.find('{')
+    if start < 0:
         raise ValueError(f'no JSON found: {raw[:200]!r}')
-    candidate = m.group(0)
-    # 先用严格 raw_decode；若失败（多为字符串内裸换行/未转义），做基础修复重试
+    # 用字符串感知的括号配对定位完整对象（比贪婪 \{.*\} 更能容忍字符串里的 }）
+    candidate = _balanced_json(text, start) or text[start:]
     dec = json.JSONDecoder()
-    try:
-        obj, _ = dec.raw_decode(candidate)
-        return obj
-    except json.JSONDecodeError:
-        # 修复：字符串内出现的裸换行转义为 \\n
-        fixed = re.sub(r'(?<!\\)(\r\n|\r|\n)', '\\n', candidate)
+    # 依次尝试：原文 → 字符串内裸换行转义（LLM 长字段写成多行的常见情况）
+    for attempt in (candidate, _escape_newlines_in_strings(candidate)):
         try:
-            obj, _ = dec.raw_decode(fixed)
-            return obj
-        except json.JSONDecodeError as e:
-            raise ValueError(f'JSON parse failed: {e}: {candidate[:200]!r}')
+            return dec.raw_decode(attempt)[0]
+        except json.JSONDecodeError:
+            continue
+    raise ValueError(f'JSON parse failed: {candidate[:200]!r}')
+
+
+def _as_str(v) -> str:
+    """把 LLM 可能返回的任意值（None/数字/对象/字符串）规整为字符串，防 .strip() 抛 AttributeError。"""
+    if v is None:
+        return ''
+    if isinstance(v, str):
+        return v
+    return str(v)
+
+
+def _as_list(v) -> list:
+    """把 LLM 可能返回的 None/非列表规整为列表。"""
+    return v if isinstance(v, list) else []
 
 
 def parse_trw_generate(raw: str, kind: str) -> dict:
     """解析出题结果（LLM 返回的 JSON 题目）。"""
     obj = _extract_json(raw)
+    otype = _as_str(obj.get('type')).strip()
+    if otype and otype != kind:
+        raise ValueError(f'LLM 返回题型 {otype!r} 与请求 {kind!r} 不符')
     if kind == 'writing':
         return {
             'type': 'writing',
-            'skeleton': obj.get('skeleton', ''),
-            'title': obj.get('title', '').strip(),
-            'keyword': obj.get('keyword', '').strip(),
-            'requirements': obj.get('requirements', '').strip(),
-            'image_desc': obj.get('image_desc', '').strip(),
+            'skeleton': _as_str(obj.get('skeleton')).strip(),
+            'title': _as_str(obj.get('title')).strip(),
+            'keyword': _as_str(obj.get('keyword')).strip(),
+            'requirements': _as_str(obj.get('requirements')).strip(),
+            'image_desc': _as_str(obj.get('image_desc')).strip(),
         }
     return {
         'type': 'translation',
-        'theme': obj.get('theme', ''),
-        'keyword': obj.get('keyword', '').strip(),
-        'material': obj.get('material', '').strip(),
+        'theme': _as_str(obj.get('theme')).strip(),
+        'keyword': _as_str(obj.get('keyword')).strip(),
+        'material': _as_str(obj.get('material')).strip(),
     }
+
+
+def _safe_score(v) -> int:
+    """把 LLM 可能返回的任意值规整为 0-15 整数（防字符串/越界分数污染展示）。"""
+    try:
+        return max(0, min(15, int(v)))
+    except (TypeError, ValueError):
+        return 0
 
 
 def parse_trw_grade(raw: str, kind: str) -> dict:
@@ -622,14 +765,65 @@ def parse_trw_grade(raw: str, kind: str) -> dict:
     obj = _extract_json(raw)
     if kind == 'writing':
         return {
-            'score': obj.get('score', 0),
-            'tier': obj.get('tier', ''),
-            'paras': obj.get('paras', []),
-            'model': obj.get('model', '').strip(),
+            'score': _safe_score(obj.get('score', 0)),
+            'tier': _as_str(obj.get('tier')).strip(),
+            'paras': _as_list(obj.get('paras')),
+            'model': _as_str(obj.get('model')).strip(),
         }
     return {
-        'reference': obj.get('reference', '').strip(),
-        'reviews': obj.get('reviews', []),
-        'score': obj.get('score', 0),
-        'tier': obj.get('tier', ''),
+        'reference': _as_str(obj.get('reference')).strip(),
+        'reviews': _as_list(obj.get('reviews')),
+        'score': _safe_score(obj.get('score', 0)),
+        'tier': _as_str(obj.get('tier')).strip(),
     }
+
+
+# ---------- 翻译单句模式 ----------
+
+def build_trw_sentence_ref_prompt(sentence: str) -> str:
+    """单句参考译文 prompt：中文句子 → 地道英文，只输出译文。"""
+    return (f'你是大学英语六级翻译老师。请把这句中文译成地道、符合六级水平的英文。'
+            f'只输出英文译文，不要任何解释或标注。\n\n{sentence}')
+
+
+def build_trw_sentence_grade_prompt(sentence: str, answer: str) -> str:
+    """单句批改 prompt：给这句翻译打 0-15 分并点评，附参考译文。"""
+    return (f'你是大学英语六级翻译阅卷老师。按六级评分标准给下面这句翻译打分并点评。\n'
+            f'评分标准：{_CET6_SCALE}\n'
+            f'中文原句：{sentence}\n'
+            f'考生译文：\n{answer}\n'
+            f'评分规则：\n'
+            f'- 若考生译文没有任何实质内容（例如只有标点符号、空白、几个零散单词、或明显乱写），'
+            f'score 直接给 0 分，tier 写"无实质内容"，comment 写"无实质内容"（严禁虚构点评）\n'
+            f'请输出：\n'
+            f'- reference：标准参考译文（英文）\n'
+            f'- comment：一句话点评（指出主要问题+怎么改）\n'
+            f'- score：分数（0-15 整数）\n'
+            f'- tier：档位说明\n'
+            f'只输出 JSON：{{"reference":"","comment":"","score":0,"tier":""}}')
+
+
+def parse_trw_sentence_grade(raw: str) -> dict:
+    """解析单句批改结果。"""
+    obj = _extract_json(raw)
+    return {
+        'reference': _as_str(obj.get('reference')).strip(),
+        'comment': _as_str(obj.get('comment')).strip(),
+        'score': _safe_score(obj.get('score', 0)),
+        'tier': _as_str(obj.get('tier')).strip(),
+    }
+
+
+# ---------- 笔记本：AI 释义 / 句式解读 ----------
+
+def build_word_meaning_prompt(word: str) -> str:
+    """未知生词的中文释义：输出 词性缩写 + 简洁释义。"""
+    return (f'请给出英语单词 "{word}" 的中文释义，格式：词性缩写 + 释义（20 字以内，多个义项用分号隔开）。'
+            f'只输出释义本身，不要任何解释。')
+
+
+def build_pattern_explain_prompt(zh: str, en: str) -> str:
+    """翻译句式解读：点出固定句式/亮点表达，用中文简述。"""
+    return (f'你是一名英语老师。请用中文简短解读下面这组中英对照句中的固定句式或亮点表达'
+            f'（60 字以内，指出用了什么句型/搭配、适合什么场景）。\n'
+            f'中文：{zh}\n英文：{en}')

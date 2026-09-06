@@ -60,6 +60,22 @@ class GenerateParseTests(unittest.TestCase):
         r = E.parse_trw_generate(raw, 'writing')
         self.assertEqual(r['skeleton'], 'picture')
 
+    def test_parse_generate_with_raw_newline_in_string(self):
+        # LLM 把 requirements 写成多行（字符串内裸换行）不应崩，且换行被转义
+        raw = ('{\n"type":"writing",\n"skeleton":"op_compare",\n'
+               '"title":"Should Universities Ban Smartphones?",\n'
+               '"keyword":"smartphones, education",\n'
+               '"requirements":"Directions: For this part, you are allowed 30 minutes.\n'
+               'You should write at least 150 words.",\n"image_desc":""\n}')
+        r = E.parse_trw_generate(raw, 'writing')
+        self.assertEqual(r['title'], 'Should Universities Ban Smartphones?')
+        self.assertIn('150 words', r['requirements'])
+
+    def test_parse_generate_with_brace_inside_string(self):
+        raw = '{"type":"writing","title":"Use {brackets} in title","requirements":"150 words","image_desc":""}'
+        r = E.parse_trw_generate(raw, 'writing')
+        self.assertEqual(r['title'], 'Use {brackets} in title')
+
 
 class GradeParseTests(unittest.TestCase):
     def test_parse_writing_grade(self):
@@ -100,6 +116,24 @@ class GradePromptTests(unittest.TestCase):
 
 
 class ApiTests(unittest.TestCase):
+    def setUp(self):
+        # 这些 API 测试会走真实归档路径，必须重定向 history_dir，避免污染用户真实历史
+        import tempfile
+        from pathlib import Path
+        import server as S
+        self._S = S
+        self._old_hist = S.cfg['paths'].pop('history_dir', None)
+        self._tmp = tempfile.TemporaryDirectory()
+        S.cfg['paths']['history_dir'] = str(Path(self._tmp.name) / '历史记录')
+        Path(S.cfg['paths']['history_dir']).mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        if self._old_hist is None:
+            self._S.cfg['paths'].pop('history_dir', None)
+        else:
+            self._S.cfg['paths']['history_dir'] = self._old_hist
+        self._tmp.cleanup()
+
     def test_generate_writing(self):
         from unittest.mock import patch
         from fastapi.testclient import TestClient
@@ -145,6 +179,115 @@ class ApiTests(unittest.TestCase):
                                        json={'type': 'translation', 'task': task, 'answer': 'China tea long history'})
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()['score'], 10)
+
+
+class SentenceModeTests(unittest.TestCase):
+    def test_sentence_ref_prompt(self):
+        prompt = E.build_trw_sentence_ref_prompt('中国茶文化历史悠久')
+        self.assertIn('中国茶文化历史悠久', prompt)
+        self.assertIn('英文', prompt)
+
+    def test_sentence_grade_prompt(self):
+        prompt = E.build_trw_sentence_grade_prompt('中国茶文化历史悠久', 'China tea long history')
+        self.assertIn('中国茶文化历史悠久', prompt)
+        self.assertIn('China tea long history', prompt)
+        self.assertIn('15', prompt)
+        self.assertIn('无实质内容', prompt)  # 空内容防御规则
+
+    def test_grade_prompts_contain_empty_guard(self):
+        wp = E.build_trw_grade_prompt('writing', {'title': 'T'}, '，')
+        self.assertIn('无实质内容', wp)
+        self.assertIn('严禁虚构', wp)
+        tp = E.build_trw_grade_prompt('translation', {'material': '中国茶文化历史悠久'}, '，')
+        self.assertIn('无实质内容', tp)
+        self.assertIn('严禁虚构', tp)
+
+    def test_parse_trw_sentence_grade(self):
+        raw = '{"reference":"Chinese tea culture boasts a long history.","comment":"缺动词，建议用 boasts","score":11,"tier":"第二档"}'
+        r = E.parse_trw_sentence_grade(raw)
+        self.assertEqual(r['score'], 11)
+        self.assertIn('boasts', r['reference'])
+        self.assertIn('boasts', r['comment'])
+
+    def test_sentence_ref_api(self):
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        import server as S
+        with patch.object(S.client, 'chat', return_value='Chinese tea culture has a long history.'):
+            r = TestClient(S.app).post('/api/trw/sentence/ref', json={'sentence': '中国茶文化历史悠久'})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn('tea culture', r.json()['reference'])
+
+    def test_sentence_grade_api_archives(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        import server as S
+        old = S.cfg['paths'].pop('history_dir', None)
+        with tempfile.TemporaryDirectory() as tmp:
+            S.cfg['paths']['history_dir'] = str(Path(tmp) / '历史记录')
+            Path(S.cfg['paths']['history_dir']).mkdir(parents=True, exist_ok=True)
+            try:
+                fake = '{"type":"translation","theme":"culture","material":"中国茶文化历史悠久。"}'
+                with patch.object(S.client, 'chat', return_value=fake):
+                    g = TestClient(S.app).post('/api/trw/generate', json={'type': 'translation'})
+                hid = g.json()['_history_id']
+                fake_grade = '{"reference":"Chinese tea culture boasts a long history.","comment":"不错","score":12,"tier":"第二档"}'
+                with patch.object(S.client, 'chat', return_value=fake_grade):
+                    r = TestClient(S.app).post('/api/trw/sentence/grade',
+                                               json={'exercise_id': hid, 'sentence': '中国茶文化历史悠久',
+                                                     'answer': 'China tea culture long history', 'index': 0})
+                self.assertEqual(r.status_code, 200, r.text)
+                self.assertEqual(r.json()['score'], 12)
+                content = S._history_get(hid)
+                self.assertIn('0', content['sentence_grades'])
+                self.assertEqual(content['sentence_grades']['0']['grade']['score'], 12)
+            finally:
+                if old is None:
+                    S.cfg['paths'].pop('history_dir', None)
+                else:
+                    S.cfg['paths']['history_dir'] = old
+
+    def test_whole_and_sentence_grade_merge(self):
+        """整段批改 + 单句批改混合使用，两者都不应被覆盖丢失。"""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        import server as S
+        old = S.cfg['paths'].pop('history_dir', None)
+        with tempfile.TemporaryDirectory() as tmp:
+            S.cfg['paths']['history_dir'] = str(Path(tmp) / '历史记录')
+            Path(S.cfg['paths']['history_dir']).mkdir(parents=True, exist_ok=True)
+            try:
+                fake = '{"type":"translation","theme":"culture","material":"中国茶文化历史悠久。"}'
+                with patch.object(S.client, 'chat', return_value=fake):
+                    g = TestClient(S.app).post('/api/trw/generate', json={'type': 'translation'})
+                hid = g.json()['_history_id']
+                # 整段批改
+                fake_whole = '{"reference":"Chinese tea culture has a long history.","reviews":[],"score":10,"tier":"第二档"}'
+                with patch.object(S.client, 'chat', return_value=fake_whole):
+                    TestClient(S.app).post('/api/trw/grade',
+                                           json={'type': 'translation',
+                                                 'task': {'material': '中国茶文化历史悠久', '_history_id': hid},
+                                                 'answer': 'China tea culture has a long history.'})
+                # 单句批改
+                fake_sent = '{"reference":"Chinese tea culture boasts a long history.","comment":"不错","score":12,"tier":"第二档"}'
+                with patch.object(S.client, 'chat', return_value=fake_sent):
+                    TestClient(S.app).post('/api/trw/sentence/grade',
+                                           json={'exercise_id': hid, 'sentence': '中国茶文化历史悠久',
+                                                 'answer': 'China tea culture long history', 'index': 0})
+                content = S._history_get(hid)
+                self.assertIn('grade', content)               # 整段批改保留
+                self.assertIn('answer', content)              # 整段答案保留
+                self.assertIn('sentence_grades', content)     # 单句批改保留
+                self.assertEqual(content['sentence_grades']['0']['grade']['score'], 12)
+            finally:
+                if old is None:
+                    S.cfg['paths'].pop('history_dir', None)
+                else:
+                    S.cfg['paths']['history_dir'] = old
 
 
 if __name__ == '__main__':

@@ -107,6 +107,15 @@
   }
   #wr-answer textarea:focus, #tr-answer textarea:focus { border-color: var(--accent-dim); }
   .trw-btns { margin-top: 12px; display: flex; gap: 10px; align-items: center; }
+  .tr-mode.active { border-color: var(--accent); color: var(--accent); }
+  .tr-sent { margin-bottom: 10px; }
+  .tr-sent .trw-title { font-size: 14px; }
+  .tr-sent-input {
+    width: 100%; background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    border-radius: 4px; padding: 8px 10px; font-size: 14px; min-height: 64px;
+    outline: none; resize: vertical; font-family: inherit; margin-top: 8px;
+  }
+  .tr-sent-input:focus { border-color: var(--accent-dim); }
   .grade-score { font-size: 20px; color: var(--accent); font-weight: 600; }
   .grade-tag { font-size: 12px; color: var(--muted); margin-left: 8px; }
   .grade-block { margin-top: 12px; }
@@ -168,6 +177,51 @@
   .hist-item .hi-ops button { padding: 2px 10px; font-size: 12px; }
   .hist-restore { border: 1px solid var(--accent-dim); color: var(--accent); background: transparent; border-radius: 3px; cursor: pointer; }
   .hist-del { border: 1px solid #5a3d3d; color: var(--danger); background: transparent; border-radius: 3px; cursor: pointer; }
+  .sp-word { padding: 1px 3px; border-radius: 3px; cursor: pointer; }
+  .sp-word:hover { background: rgba(110,163,192,.10); }
+  .sp-word.ok { color: var(--text); }
+  .sp-word.bad { color: var(--danger); border-bottom: 2px solid var(--danger); }
+  .sp-word.hl { background: rgba(110,163,192,.14); border-bottom: 1px solid var(--accent-dim); }
+  .sp-word.read { color: var(--accent); }
+  .sp-word.cur { background: rgba(110,163,192,.28); color: var(--accent); }
+  .rec-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--danger); margin-right: 6px; animation: pulse 1s infinite; }
+  .sp-sent { border-left: 2px solid var(--border); padding: 8px 0 8px 12px; margin-bottom: 10px; }
+  .sp-sent-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .sp-sent-text { flex: 1; min-width: 220px; line-height: 1.7; }
+  .sp-sent .translation { display: none; color: var(--muted); font-size: 13px; margin-top: 4px; line-height: 1.6; }
+  .sp-sent-grade { margin-top: 8px; }
+  .sp-mini-score { font-size: 16px; color: var(--accent); font-weight: 600; }
+  .sp-record { font-size: 12px; padding: 4px 12px; flex: none; }
+  .sp-record.recording { border-color: var(--danger); color: var(--danger); }
+  .sp-replay:disabled { opacity: .4; cursor: default; }
+  .translate-btn.playing { color: var(--accent); border-color: var(--accent); background: rgba(110,163,192,.12); }
+  .sp-speed.active { color: var(--accent); border-color: var(--accent); background: rgba(110,163,192,.12); }
+  .st-word { cursor: pointer; padding: 1px 2px; border-radius: 3px; }
+  .st-word:hover { background: rgba(110,163,192,.14); }
+  .st-word.read { color: var(--accent); }
+  .word-bubble {
+    position: fixed; z-index: 100; padding: 8px 10px;
+    background: var(--panel); border: 1px solid var(--accent-dim); border-radius: 6px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.45); font-size: 13px; max-width: 240px;
+  }
+  .word-bubble .wb-trans { margin-bottom: 6px; line-height: 1.4; }
+  .word-bubble .wb-actions { display: flex; gap: 6px; }
+  .word-bubble .btn.small { padding: 3px 10px; font-size: 12px; }
+  .nb-cat.active { border-color: var(--accent); color: var(--accent); }
+  .nb-entry { margin-bottom: 10px; }
+  .nb-word { font-size: 15px; }
+  .nb-play { cursor: pointer; margin-left: 6px; }
+  .nb-play:hover { color: var(--accent); }
+  .nb-entry .hi-ops { display: flex; gap: 12px; margin-top: 10px; }
+  .nb-edit-input {
+    width: 100%; background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    border-radius: 4px; padding: 6px 8px; font-size: 13px; margin-top: 2px; margin-bottom: 8px;
+    outline: none; font-family: inherit; resize: none; overflow: hidden; line-height: 1.6;
+  }
+  .nb-edit-input:focus { border-color: var(--accent-dim); }
+  .wr-para { display: flex; align-items: flex-start; gap: 8px; }
+  .wr-para > span { flex: 1; }
+  .wr-collect { flex: none; }
 </style>
 </head>
 <body>
@@ -179,6 +233,8 @@
     <div class="tab" data-panel="p-story">互动故事</div>
     <div class="tab" data-panel="p-translation">翻译练习</div>
     <div class="tab" data-panel="p-writing">写作练习</div>
+    <div class="tab" data-panel="p-speaking">口语练习</div>
+    <div class="tab" data-panel="p-notebook">笔记本</div>
   </div>
   <div class="model-bar">
     <span class="model-label">生成模型</span>
@@ -197,14 +253,6 @@
     <div style="margin-top: 16px; display: flex; align-items: center; gap: 12px;">
       <button class="btn" id="btn-start">开始新故事</button>
       <button class="btn end" id="btn-end" style="display:none">存档结束</button>
-      <div class="toggle-wrap" id="vocab-toggle-wrap">
-        <label class="toggle">
-          <input type="checkbox" id="vocab-toggle">
-          <span class="track"></span>
-          <span class="thumb"></span>
-        </label>
-        <label class="toggle-label" for="vocab-toggle">织入六级词</label>
-      </div>
       <span style="flex:1"></span>
       <button class="btn small ghost hist-btn" data-type="story">历史</button>
     </div>
@@ -237,19 +285,67 @@
   </div>
 
   <div class="panel" id="p-translation">
-    <div id="tr-task" class="trw-card"><div class="placeholder">点「出一题」，AI 现场编翻译材料</div></div>
-    <div id="tr-answer">
-      <span class="trw-label">你的译文</span>
-      <textarea id="tr-input" placeholder="在这里写你的英文译文…"></textarea>
-    </div>
-    <div class="trw-btns">
-      <button class="btn" id="tr-generate">出一题</button>
-      <button class="btn" id="tr-submit" disabled>提交批改</button>
-      <button class="btn small ghost" id="tr-new" disabled>换一题</button>
+    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+      <button class="btn small tr-mode active" id="tr-mode-whole">整段模式</button>
+      <button class="btn small tr-mode" id="tr-mode-sentence">单句模式</button>
       <span style="flex:1"></span>
       <button class="btn small ghost hist-btn" data-type="translation">历史</button>
     </div>
-    <div id="tr-grade"></div>
+    <div id="tr-task" class="trw-card"><div class="placeholder">点「出一题」，AI 现场编翻译材料</div></div>
+    <div id="tr-whole-box">
+      <div id="tr-answer">
+        <span class="trw-label">你的译文</span>
+        <textarea id="tr-input" placeholder="在这里写你的英文译文…"></textarea>
+      </div>
+      <div class="trw-btns">
+        <button class="btn" id="tr-generate">出一题</button>
+        <button class="btn" id="tr-submit" disabled>提交批改</button>
+        <button class="btn small ghost" id="tr-new" disabled>换一题</button>
+      </div>
+      <div id="tr-grade"></div>
+    </div>
+    <div id="tr-sentence-box" style="display:none">
+      <div id="tr-sent-list"></div>
+      <div class="trw-btns">
+        <button class="btn" id="tr-s-generate">出一题</button>
+        <button class="btn small ghost" id="tr-s-new" disabled>换一题</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="p-speaking">
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <button class="btn" id="sp-generate">生成朗读题</button>
+      <span style="flex:1"></span>
+      <button class="btn small ghost hist-btn" data-type="speaking">历史</button>
+    </div>
+    <div class="status" id="sp-status"></div>
+    <div id="sp-task" class="trw-card" style="display:none">
+      <div class="trw-meta" id="sp-words-meta"></div>
+      <div class="status" style="margin:6px 0 12px; display:flex; align-items:center; flex-wrap:wrap; gap:6px">
+        <span>语速</span>
+        <button class="translate-btn sp-speed" data-rate="0.5">0.5x</button>
+        <button class="translate-btn sp-speed" data-rate="0.75">0.75x</button>
+        <button class="translate-btn sp-speed active" data-rate="1">1x</button>
+        <button class="translate-btn sp-speed" data-rate="1.25">1.25x</button>
+        <button class="translate-btn sp-speed" data-rate="1.5">1.5x</button>
+        <span style="margin-left:6px">逐句：播放范本（逐词变蓝）→ 开始朗读 → 停止并评分 → 回放 · 点击任意单词可单独听发音</span>
+      </div>
+      <div id="sp-sentences"></div>
+    </div>
+  </div>
+
+  <div class="panel" id="p-notebook">
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; flex-wrap:wrap">
+      <button class="btn small nb-cat active" data-cat="words">生词</button>
+      <button class="btn small nb-cat" data-cat="patterns">翻译句式</button>
+      <button class="btn small nb-cat" data-cat="writing">写作表达</button>
+      <span style="flex:1"></span>
+      <button class="btn small ghost" id="nb-review">复习模式</button>
+      <button class="btn small ghost" id="nb-export">导出</button>
+    </div>
+    <div id="nb-list"></div>
+    <div id="nb-review-box" style="display:none"></div>
   </div>
 </div>
 
@@ -264,6 +360,23 @@
 <script>
 const $ = id => document.getElementById(id);
 
+// LLM 请求统一带超时。后端单次 180s × 重试1（+5xx 重试）最坏约 360s+，
+// 前端超时必须 ≥ 后端最坏时长，否则后端仍在跑、前端已 abort，导致重复生成/重复归档。
+async function llmFetch(url, body, timeoutMs = 420000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---------- SSE 工具 ----------
 function parseSSEBlock(block) {
   let event = 'message', dataLines = [];
@@ -275,61 +388,87 @@ function parseSSEBlock(block) {
   catch { return { event, data: {} }; }
 }
 
-async function streamSSE(url, body, onEvent) {
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {}),
-  });
-  if (!resp.ok) {
-    let detail = `HTTP ${resp.status}`;
-    try { const j = await resp.json(); if (j && j.detail) detail = j.detail; } catch {}
-    throw new Error(detail);
-  }
-  const sid = resp.headers.get('X-Session-Id');
-  if (sid) onEvent('session', { session_id: sid });
-  const reader = resp.body.getReader();
-  const dec = new TextDecoder();
-  let buf = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf('\n\n')) !== -1) {
-      const block = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      if (block.trim()) onEvent(parseSSEBlock(block).event, parseSSEBlock(block).data);
+// 与 llmFetch 保持一致：后端 llm_stream 单次 180s + 重试最坏约 360s+，
+// 前端超时须 ≥ 后端最坏时长，否则后端仍在生成、前端已 abort。
+async function streamSSE(url, body, onEvent, timeoutMs = 420000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+      signal: ctrl.signal,
+    });
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try { const j = await resp.json(); if (j && j.detail) detail = j.detail; } catch {}
+      throw new Error(detail);
     }
+    const sid = resp.headers.get('X-Session-Id');
+    if (sid) onEvent('session', { session_id: sid });
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf('\n\n')) !== -1) {
+          const block = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          if (block.trim()) onEvent(parseSSEBlock(block).event, parseSSEBlock(block).data);
+        }
+      }
+    } catch (e) {
+      // 流中断/超时：取消 reader，避免永久 busy；异常继续向上抛给调用方处理
+      try { await reader.cancel(); } catch {}
+      throw e;
+    }
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 // ---------- 音频顺序队列 ----------
 let playChain = Promise.resolve();
+let playEpoch = 0;
 const activeAudios = new Set();
+let activeFinish = null;  // 当前正在播放项的 finish，stopAllAudio 时立即结束，避免后续排队阻塞 30s
 function stopAllAudio() {
+  playEpoch++;  // 失效所有尚未播放的排队项（幽灵音频防护）
   for (const a of activeAudios) { try { a.pause(); } catch {} }
   activeAudios.clear();
-  playChain = Promise.resolve();
+  if (activeFinish) { const f = activeFinish; activeFinish = null; try { f(); } catch {} }
 }
-function enqueueAudio(b64, onPlay) {
+function enqueueAudio(b64, onPlay, onProgress) {
+  const epoch = playEpoch;
   playChain = playChain.then(() => new Promise(resolve => {
+    if (epoch !== playEpoch) { resolve(); return; }  // 已被 stopAllAudio 取消
     const blob = new Blob([Uint8Array.from(atob(b64), c => c.charCodeAt(0))], { type: 'audio/wav' });
     const a = new Audio(URL.createObjectURL(blob));
     activeAudios.add(a);
     let settled = false;
+    let timer = null;
     const finish = () => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       activeAudios.delete(a);
       URL.revokeObjectURL(a.src);
+      activeFinish = null;
       resolve();
     };
+    activeFinish = finish;
     a.onended = finish;
     a.onerror = finish;
+    if (onProgress) a.ontimeupdate = () => onProgress(a.currentTime, a.duration);
     if (onPlay) onPlay();
     a.play().catch(finish);
-    setTimeout(finish, 30000);  // 兜底：切后台/浏览器暂停导致 onended 不触发时，强制推进队列
+    // 兜底：切后台/浏览器暂停导致 onended 不触发时，先停再推进队列，避免下一句叠在旧句上
+    timer = setTimeout(() => { try { a.pause(); } catch {} finish(); }, 30000);
   }));
 }
 
@@ -347,10 +486,7 @@ async function toggleTranslation(text, btn) {
   btn.disabled = true;
   btn.textContent = '…';
   try {
-    const r = await fetch('/api/translate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
+    const r = await llmFetch('/api/translate', { text });
     if (!r.ok) throw new Error(r.status);
     const d = await r.json();
     transCache[text] = d.translation;
@@ -364,7 +500,7 @@ async function toggleTranslation(text, btn) {
   btn.textContent = '译';
 }
 
-function makeSentenceRow(text, speaker) {
+function makeSentenceRow(text, speaker, wordClick, wordSource) {
   const row = document.createElement('div');
   row.className = 'sent-row';
   const head = document.createElement('div');
@@ -377,7 +513,11 @@ function makeSentenceRow(text, speaker) {
   }
   const txt = document.createElement('span');
   txt.className = 'sent-text';
-  txt.textContent = text;
+  if (wordClick) {
+    wbRenderWords(txt, text, wordSource || '');
+  } else {
+    txt.textContent = text;
+  }
   head.appendChild(txt);
   const btn = document.createElement('button');
   btn.className = 'translate-btn';
@@ -390,6 +530,114 @@ function makeSentenceRow(text, speaker) {
   row.appendChild(head);
   row.appendChild(tr);
   return row;
+}
+
+// ---------- 逐词气泡：翻译（默认开启）+ 播放 + 收录（互动故事/每日一篇/参考译文/范文/笔记本通用） ----------
+let wbBubbleEl = null, wbWord = null, wbContext = null, wbSource = '', wbAnchor = null;
+
+function wbWordSpan(word, context, source) {
+  const span = document.createElement('span');
+  span.className = 'st-word';
+  span.textContent = word;
+  span.onclick = (e) => {
+    e.stopPropagation();
+    wbShowBubble(span, word, context, source);
+  };
+  return span;
+}
+
+// 把文本按词渲染进容器（英文单词可点，标点空格原样保留）
+function wbRenderWords(container, text, source) {
+  container.innerHTML = '';
+  const tokens = String(text).split(/([\w']+)/);
+  tokens.forEach(tok => {
+    if (/^[\w']+$/.test(tok)) {
+      container.appendChild(wbWordSpan(tok, text, source));
+    } else {
+      container.appendChild(document.createTextNode(tok));
+    }
+  });
+}
+
+function wbShowBubble(anchor, word, context, source) {
+  wbHideBubble();
+  wbWord = word;
+  wbContext = context || '';
+  wbSource = source || '';
+  const b = document.createElement('div');
+  b.className = 'word-bubble';
+  b.innerHTML = '<div class="wb-trans">翻译中…</div><div class="wb-actions"></div>';
+  const trans = b.querySelector('.wb-trans');
+  const act = b.querySelector('.wb-actions');
+  const play = document.createElement('button');
+  play.className = 'btn small';
+  play.textContent = '▶ 播放';
+  play.onclick = (e) => { e.stopPropagation(); wbPlayWord(wbWord); };
+  const add = document.createElement('button');
+  add.className = 'btn small';
+  add.textContent = '＋收录';
+  add.onclick = async (e) => {
+    e.stopPropagation();
+    add.disabled = true;
+    add.textContent = '收录中…';
+    try {
+      const r = await fetch('/api/notebook/word', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ word: wbWord, context: wbContext, source: wbSource }),
+      });
+      if (!r.ok) { const e2 = await r.json(); throw new Error(e2.detail || r.status); }
+      const d = await r.json();
+      add.textContent = d.duplicate ? '已收录过 ✓' : '已收录 ✓';
+      add.disabled = false;
+      setTimeout(wbHideBubble, 1200);
+    } catch (err) {
+      add.textContent = '收录失败';
+      add.disabled = false;
+      setTimeout(wbHideBubble, 1500);
+    }
+  };
+  act.appendChild(play);
+  act.appendChild(add);
+  document.body.appendChild(b);
+  wbBubbleEl = b;
+  wbAnchor = anchor;
+  wbReposition();
+  wbFetchMeaning(trans, wbWord);
+  setTimeout(() => document.addEventListener('click', wbHideBubble), 0);
+  window.addEventListener('scroll', wbReposition, true);  // 滚动时气泡跟随单词
+  window.addEventListener('resize', wbReposition);
+}
+
+function wbReposition() {
+  if (wbBubbleEl && wbAnchor) {
+    const r = wbAnchor.getBoundingClientRect();
+    wbBubbleEl.style.left = Math.min(r.left, window.innerWidth - 220) + 'px';
+    wbBubbleEl.style.top = (r.bottom + 4) + 'px';
+  }
+}
+
+async function wbFetchMeaning(transEl, word) {
+  try {
+    const r = await llmFetch('/api/word/translate', { word });
+    if (!r.ok) throw new Error(r.status);
+    const d = await r.json();
+    transEl.textContent = d.meaning || '（未查到）';
+  } catch (e) {
+    transEl.textContent = '翻译失败';
+  }
+}
+
+function wbHideBubble() {
+  if (wbBubbleEl) { wbBubbleEl.remove(); wbBubbleEl = null; }
+  wbAnchor = null;
+  document.removeEventListener('click', wbHideBubble);
+  window.removeEventListener('scroll', wbReposition, true);
+  window.removeEventListener('resize', wbReposition);
+}
+
+function wbPlayWord(word) {
+  const a = new Audio('/api/tts/word?text=' + encodeURIComponent(word) + '&_=' + Date.now());
+  a.play().catch(() => {});
 }
 
 function makeOptionRow(key, text) {
@@ -430,10 +678,7 @@ async function toggleOptionTranslation(text, btn) {
   btn.disabled = true;
   btn.textContent = '…';
   try {
-    const r = await fetch('/api/translate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
+    const r = await llmFetch('/api/translate', { text });
     if (!r.ok) throw new Error(r.status);
     const d = await r.json();
     transCache[text] = d.translation;
@@ -448,7 +693,7 @@ async function toggleOptionTranslation(text, btn) {
 }
 
 function escapeHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // ---------- 互动故事 ----------
@@ -459,6 +704,7 @@ function clearStoryUI() {
   $('story-area').innerHTML = '';
   $('options-area').innerHTML = '';
   lastSentEl = null;
+  sessionId = null;  // 开始新故事前清空旧 sessionId，避免启动失败后误归档上一会话
 }
 
 function setStatus(html) { $('story-status').innerHTML = html; }
@@ -495,20 +741,27 @@ function choose(choice) {
   $('story-area').appendChild(tag);
   setStatus('<span class="dot"></span>正在续写并朗读…');
   streamSSE('/api/story/choose', { session_id: sessionId, choice }, handleStreamEvent)
-    .catch(err => { setStatus(`出错了：${err.message}`); busy = false; });
+    .catch(err => { setStatus(`出错了：${escapeHtml(err.message)}`); })
+    .finally(() => { busy = false; });
 }
 
 function handleStreamEvent(ev, data) {
   if (ev === 'session') { sessionId = data.session_id; return; }
-  if (ev === 'error') { setStatus(`出错了：${data.message || '未知错误'}`); busy = false; return; }
+  if (ev === 'error') { setStatus(`出错了：${escapeHtml(data.message || '未知错误')}`); busy = false; return; }
   if (ev === 'sentence') {
-    const el = makeSentenceRow(data.text, null);
+    const el = makeSentenceRow(data.text, null, true, '互动故事');  // 互动故事正文：逐词可点（翻译/播放/收录）
     $('story-area').appendChild(el);
     el.scrollIntoView({ block: 'end', behavior: 'smooth' });
-    enqueueAudio(data.audio, () => {
-      if (lastSentEl) lastSentEl.classList.remove('playing');
-      el.classList.add('playing');
-      lastSentEl = el;
+    const wordSpans = Array.from(el.querySelectorAll('.sent-text .st-word'));
+    const wt = data.word_timeline || [];
+    enqueueAudio(data.audio, null, (t) => {
+      // 逐词变蓝：用 kokoro 词级时间戳精确对齐
+      let wi = 0;
+      for (let j = 0; j < wt.length; j++) {
+        if (t >= wt[j].start) wi = j + 1; else break;
+      }
+      wi = Math.min(wi, wordSpans.length);
+      wordSpans.forEach((s, i) => s.classList.toggle('read', i < wi));
     });
   }
   if (ev === 'options') { showOptions(data.options); busy = false; clearStatus(); }
@@ -522,25 +775,9 @@ $('btn-start').onclick = () => {
   $('btn-end').style.display = 'inline-block';
   setStatus('<span class="dot"></span>正在构思故事开头…');
   streamSSE('/api/story/start', {}, handleStreamEvent)
-    .catch(err => { setStatus(`出错了：${err.message}`); busy = false; });
+    .catch(err => { setStatus(`出错了：${escapeHtml(err.message)}`); })
+    .finally(() => { busy = false; });
 };
-
-// 织词开关：开启后互动故事也织入 CET-6 词库
-$('vocab-toggle').addEventListener('change', async (e) => {
-  const enabled = e.target.checked;
-  // 用 class 驱动开关动效（不依赖 :checked 伪类级联，更稳）
-  const toggle = e.target.closest('.toggle');
-  if (toggle) toggle.classList.toggle('on', enabled);
-  try {
-    await fetch('/api/story/vocab', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
-    });
-    setStatus(`已${enabled ? '开启' : '关闭'}织入六级词（下次生成生效）`);
-  } catch (err) {
-    setStatus(`设置失败：${err.message}`);
-  }
-});
 
 $('btn-end').onclick = async () => {
   if (!sessionId) return;
@@ -552,8 +789,8 @@ $('btn-end').onclick = async () => {
       body: JSON.stringify({ session_id: sessionId, choice: '' }),
     });
     const d = await r.json();
-    setStatus(`已归档：${d.dir}（${d.segments} 段 / ${Math.round(d.duration_s)} 秒）`);
-  } catch (e) { setStatus(`归档失败：${e.message}`); }
+    setStatus(`已归档：${escapeHtml(d.dir)}（${escapeHtml(d.segments)} 段 / ${Math.round(d.duration_s)} 秒）`);
+  } catch (e) { setStatus(`归档失败：${escapeHtml(e.message)}`); }
   sessionId = null;
   $('options-area').innerHTML = '';
   $('btn-end').style.display = 'none';
@@ -561,13 +798,69 @@ $('btn-end').onclick = async () => {
 };
 
 // ---------- 每日一篇 ----------
+function collectDailyWordSpans(unitRows) {
+  return unitRows.map(row => Array.from(row.querySelectorAll('.sent-text .st-word')));
+}
+
+// 逐词高亮：优先用 kokoro 词级时间戳精确定位，缺省按字符长度加权估算
+function highlightDailyWords(unitRows, wordSpansPerRow, timeline, wordTimeline, t, duration) {
+  if (!unitRows.length) return;
+  let cur = 0;
+  if (timeline.length) {
+    for (let i = 0; i < timeline.length; i++) {
+      if (t >= timeline[i].start) cur = i; else break;
+    }
+  } else if (duration) {
+    cur = Math.floor((t / duration) * unitRows.length);
+  }
+  unitRows.forEach((row, i) => {
+    const spans = wordSpansPerRow[i] || [];
+    if (i < cur) {
+      spans.forEach(s => s.classList.add('read'));
+    } else if (i === cur) {
+      const wt = (wordTimeline && wordTimeline[cur]) || [];
+      let wi;
+      if (wt.length) {
+        // 精确：按词级时间戳定位当前词
+        wi = 0;
+        for (let j = 0; j < wt.length; j++) {
+          if (t >= wt[j].start) wi = j + 1; else break;
+        }
+        wi = Math.min(wi, spans.length);
+      } else {
+        // 兜底：按字符长度加权分配句内时间（长词读得更久）
+        let within = 1;
+        if (timeline.length && timeline[cur] && (timeline[cur].dur || 0) > 0) {
+          within = (t - timeline[cur].start) / timeline[cur].dur;
+        } else if (duration && unitRows.length) {
+          const rowDur = duration / unitRows.length;
+          within = (t - cur * rowDur) / rowDur;
+        }
+        within = Math.max(0, Math.min(1, within));
+        const weights = spans.map(s => Math.max(1, s.textContent.length));
+        const total = weights.reduce((a, b) => a + b, 0) || 1;
+        const target = within * total;
+        let acc = 0;
+        wi = spans.length;
+        for (let j = 0; j < weights.length; j++) {
+          acc += weights[j];
+          if (acc >= target) { wi = j + 1; break; }
+        }
+      }
+      spans.forEach((s, j) => s.classList.toggle('read', j < wi));
+    } else {
+      spans.forEach(s => s.classList.remove('read'));
+    }
+  });
+}
+
 $('btn-daily').onclick = async () => {
   const btn = $('btn-daily');
   btn.disabled = true;
   $('daily-status').innerHTML = '<span class="dot"></span>正在生成（约 1 分钟）…';
   $('daily-result').innerHTML = '';
   try {
-    const r = await fetch('/api/daily', { method: 'POST' });
+    const r = await llmFetch('/api/daily', {});
     if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.status); }
     const d = await r.json();
     $('daily-status').innerHTML = '';
@@ -579,7 +872,7 @@ $('btn-daily').onclick = async () => {
     audio.controls = true;
     audio.style.width = '100%';
     audio.style.marginBottom = '12px';
-    audio.src = `/api/daily/audio?date=${d.date}`;
+    audio.src = `/api/daily/audio?date=${d.date}` + (d.dir ? `&dir=${encodeURIComponent(d.dir)}` : '');
     const errEl = document.createElement('div');
     errEl.className = 'audio-error';
     errEl.style.display = 'none';
@@ -588,13 +881,24 @@ $('btn-daily').onclick = async () => {
     result.appendChild(errEl);
     const unitsBox = document.createElement('div');
     unitsBox.className = 'daily-units';
+    const unitRows = [];
     (d.units || []).forEach(u => {
-      unitsBox.appendChild(makeSentenceRow(u.text, u.speaker === 'N' ? null : u.speaker));
+      const row = makeSentenceRow(u.text, u.speaker === 'N' ? null : u.speaker, true, '每日一篇');
+      unitRows.push(row);
+      unitsBox.appendChild(row);
     });
     result.appendChild(unitsBox);
+    // 逐词高亮：用后端返回的真实时间轴定位当前句，句内按词级时间戳逐词
+    const timeline = d.timeline || [];
+    const wordTimeline = d.word_timeline || [];
+    const wordSpansPerRow = collectDailyWordSpans(unitRows);
+    audio.ontimeupdate = () => {
+      highlightDailyWords(unitRows, wordSpansPerRow, timeline, wordTimeline, audio.currentTime, audio.duration);
+    };
+    audio.onended = () => { wordSpansPerRow.flat().forEach(s => s.classList.remove('read')); };
     $('daily-result').appendChild(result);
   } catch (e) {
-    $('daily-status').innerHTML = `出错了：${e.message}`;
+    $('daily-status').innerHTML = `出错了：${escapeHtml(e.message)}`;
   }
   btn.disabled = false;
 };
@@ -696,7 +1000,7 @@ document.querySelectorAll('.model-btn').forEach(b => {
 
 $('btn-cloud').onclick = () => {
   if (modelState && !modelState.cloud.online) {
-    $('model-status').textContent = '云端 LiteLLM 未检测到服务，仍切换？生成会失败。';
+    $('model-status').textContent = '云端 DeepSeek 未检测到服务，仍切换？生成会失败。';
   }
   switchModel('cloud', $('cloud-model-select').value || null);
 };
@@ -716,6 +1020,7 @@ function initTrwPanel(prefix, type) {
   let busy = false;
 
   function renderTask(t) {
+    task = t;
     if (t.type === 'writing') {
       let html = `<div class="trw-title">${escapeHtml(t.title)}</div>`;
       if (t.image_desc) html += `<div class="trw-meta">【图/表】${escapeHtml(t.image_desc)}</div>`;
@@ -740,10 +1045,7 @@ function initTrwPanel(prefix, type) {
     submitBtn.disabled = true;
     newBtn.disabled = true;
     try {
-      const r = await fetch('/api/trw/generate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type }),
-      });
+      const r = await llmFetch('/api/trw/generate', { type });
       if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.status); }
       task = await r.json();
       renderTask(task);
@@ -759,10 +1061,7 @@ function initTrwPanel(prefix, type) {
     submitBtn.disabled = true;
     gradeEl.innerHTML = '<div class="status"><span class="dot"></span>AI 正在批改…</div>';
     try {
-      const r = await fetch('/api/trw/grade', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type, task, answer }),
-      });
+      const r = await llmFetch('/api/trw/grade', { type, task, answer });
       if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.status); }
       renderGrade(await r.json());
     } catch (e) {
@@ -773,17 +1072,53 @@ function initTrwPanel(prefix, type) {
 
   function renderGrade(d) {
     if (d.type === 'writing') {
-      let html = `<div class="grade-block"><span class="grade-score">${d.score}</span><span class="grade-tag">/15 · ${escapeHtml(d.tier || '')}</span></div>`;
+      let html = `<div class="grade-block"><span class="grade-score">${escapeHtml(d.score)}</span><span class="grade-tag">/15 · ${escapeHtml(d.tier || '')}</span></div>`;
       if (d.paras && d.paras.length) {
         html += `<div class="grade-block"><div class="grade-label">逐段批注</div>`;
         d.paras.forEach(p => { html += `<div class="grade-para"><b>${escapeHtml(p.para || '')}</b>：${escapeHtml(p.comment || '')}</div>`; });
         html += '</div>';
       }
-      if (d.model) html += `<div class="grade-block"><div class="grade-label">同题范文</div><div class="model-block">${escapeHtml(d.model)}</div></div>`;
+      if (d.model) {
+        html += `<div class="grade-block"><div class="grade-label">同题范文（每段可「收录」，点单词查/播/收）</div></div>`;
+      }
       gradeEl.innerHTML = html;
+      if (d.model) {
+        // 范文按段渲染，段内逐词可点
+        const box = gradeEl.querySelectorAll('.grade-block');
+        const modelBox = box[box.length - 1];
+        const paras = String(d.model).split(/\n+/).map(s => s.trim()).filter(s => s);
+        paras.forEach((para, pi) => {
+          const p = document.createElement('div');
+          p.className = 'model-block wr-para';
+          const span = document.createElement('span');
+          wbRenderWords(span, para, '写作练习');
+          p.appendChild(span);
+          const btn = document.createElement('button');
+          btn.className = 'btn small ghost wr-collect';
+          btn.textContent = '收录';
+          btn.onclick = async () => {
+            btn.disabled = true; btn.textContent = '收录中…';
+            try {
+              const r = await fetch('/api/notebook/writing', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: para }),
+              });
+              if (!r.ok) throw new Error(r.status);
+              const dd = await r.json();
+              btn.textContent = dd.duplicate ? '已收录过 ✓' : '已收录 ✓';
+              btn.disabled = false;
+            } catch (e) {
+              btn.textContent = '收录失败';
+              btn.disabled = false;
+            }
+          };
+          p.appendChild(btn);
+          modelBox.appendChild(p);
+        });
+      }
       submitBtn.disabled = false;
     } else {
-      let html = `<div class="grade-block"><span class="grade-score">${d.score}</span><span class="grade-tag">/15 · ${escapeHtml(d.tier || '')}</span></div>`;
+      let html = `<div class="grade-block"><span class="grade-score">${escapeHtml(d.score)}</span><span class="grade-tag">/15 · ${escapeHtml(d.tier || '')}</span></div>`;
       if (d.reference) html += `<div class="grade-block"><div class="grade-label">参考译文</div><div class="model-block">${escapeHtml(d.reference)}</div></div>`;
       if (d.reviews && d.reviews.length) {
         html += `<div class="grade-block"><div class="grade-label">逐句点评</div>`;
@@ -798,10 +1133,647 @@ function initTrwPanel(prefix, type) {
   $(prefix + '-generate').onclick = gen;
   $(prefix + '-submit').onclick = submit;
   $(prefix + '-new').onclick = gen;
+
+  // 暴露给历史恢复使用：恢复写作题时同步设置闭包 task 并启用提交
+  return {
+    renderTask,
+    renderGrade,
+    setAnswer(v) { inputEl.value = v; },
+  };
 }
 
-initTrwPanel('wr', 'writing');
-initTrwPanel('tr', 'translation');
+const wrPanel = initTrwPanel('wr', 'writing');
+
+// ---------- 翻译练习（整段/单句双模式，共享同一道题） ----------
+let trTask = null, trBusy = false;
+
+function trSetMode(mode) {
+  $('tr-mode-whole').classList.toggle('active', mode === 'whole');
+  $('tr-mode-sentence').classList.toggle('active', mode === 'sentence');
+  $('tr-whole-box').style.display = mode === 'whole' ? 'block' : 'none';
+  $('tr-sentence-box').style.display = mode === 'sentence' ? 'block' : 'none';
+  if (mode === 'sentence') trRenderSentences();
+}
+$('tr-mode-whole').onclick = () => trSetMode('whole');
+$('tr-mode-sentence').onclick = () => trSetMode('sentence');
+
+function trRenderTask(t) {
+  $('tr-task').innerHTML = '<div class="trw-title">【汉译英】将下面中文段落译成英语</div>' +
+    '<div class="trw-meta">' + escapeHtml(t.material) + '</div>';
+  $('tr-input').value = '';
+  $('tr-input').placeholder = '在这里写你的英文译文…';
+  $('tr-grade').innerHTML = '';
+  $('tr-submit').disabled = false;
+  $('tr-new').disabled = false;
+  $('tr-s-new').disabled = false;
+  trRenderSentences();
+}
+
+async function trGenerate() {
+  if (trBusy) return;
+  trBusy = true;
+  $('tr-task').innerHTML = '<div class="status"><span class="dot"></span>正在出一题…</div>';
+  $('tr-grade').innerHTML = '';
+  $('tr-submit').disabled = true;
+  $('tr-new').disabled = true;
+  $('tr-s-new').disabled = true;
+  try {
+    const r = await llmFetch('/api/trw/generate', { type: 'translation' });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.status); }
+    trTask = await r.json();
+    trRenderTask(trTask);
+  } catch (e) {
+    trTask = null;
+    $('tr-task').innerHTML = '<div class="placeholder">出题失败：' + escapeHtml(e.message) + '</div>';
+  }
+  trBusy = false;
+}
+$('tr-generate').onclick = trGenerate;
+$('tr-s-generate').onclick = trGenerate;
+$('tr-new').onclick = trGenerate;
+$('tr-s-new').onclick = trGenerate;
+
+// 整段模式：提交批改
+$('tr-submit').onclick = async () => {
+  const answer = $('tr-input').value.trim();
+  if (!answer) { $('tr-grade').innerHTML = '<div class="placeholder">请先写下你的答案</div>'; return; }
+  if (!trTask) return;
+  $('tr-submit').disabled = true;
+  $('tr-grade').innerHTML = '<div class="status"><span class="dot"></span>AI 正在批改…</div>';
+  try {
+    const r = await llmFetch('/api/trw/grade', { type: 'translation', task: trTask, answer });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.status); }
+    const d = await r.json();
+    trRenderWholeGrade(d);
+  } catch (e) {
+    $('tr-grade').innerHTML = '<div class="placeholder">批改失败：' + escapeHtml(e.message) + '</div>';
+    $('tr-submit').disabled = false;
+  }
+};
+
+function trRenderWholeGrade(d) {
+  const box = $('tr-grade');
+  box.innerHTML = '';
+  // 分数
+  const scoreBlock = document.createElement('div');
+  scoreBlock.className = 'grade-block';
+  scoreBlock.innerHTML = '<span class="grade-score">' + escapeHtml(d.score) +
+    '</span><span class="grade-tag">/15 · ' + escapeHtml(d.tier || '') + '</span>';
+  box.appendChild(scoreBlock);
+  // 参考译文（逐词可点：翻译/播放/收录）
+  if (d.reference) {
+    const refBlock = document.createElement('div');
+    refBlock.className = 'grade-block';
+    const label = document.createElement('div');
+    label.className = 'grade-label';
+    label.textContent = '参考译文（点单词查/播/收）';
+    refBlock.appendChild(label);
+    const mb = document.createElement('div');
+    mb.className = 'model-block';
+    wbRenderWords(mb, d.reference, '翻译练习');
+    refBlock.appendChild(mb);
+    box.appendChild(refBlock);
+  }
+  // 逐句点评（参考句也逐词可点）
+  if (d.reviews && d.reviews.length) {
+    const revBlock = document.createElement('div');
+    revBlock.className = 'grade-block';
+    revBlock.innerHTML = '<div class="grade-label">逐句点评</div>';
+    d.reviews.forEach(x => {
+      const rev = document.createElement('div');
+      rev.className = 'grade-review';
+      rev.appendChild(document.createTextNode(x.comment || ''));
+      const sent = document.createElement('div');
+      sent.className = 'grade-sent';
+      sent.textContent = '考生：' + (x.sentence || '') + ' ｜ 参考：';
+      const refSpan = document.createElement('span');
+      wbRenderWords(refSpan, x.reference || '', '翻译练习');
+      sent.appendChild(refSpan);
+      rev.appendChild(sent);
+      revBlock.appendChild(rev);
+    });
+    box.appendChild(revBlock);
+  }
+  $('tr-submit').disabled = false;
+}
+
+// 单句模式
+function trSplitSentences(text) {
+  return String(text).split(/(?<=[。！？；])/).map(s => s.trim()).filter(s => s);
+}
+
+function trRenderSentences() {
+  const box = $('tr-sent-list');
+  box.innerHTML = '';
+  if (!trTask || !trTask.material) {
+    box.innerHTML = '<div class="placeholder">点「出一题」后，这里按句显示材料，逐句参考译文、逐句批改。</div>';
+    return;
+  }
+  trSplitSentences(trTask.material).forEach((s, i) => box.appendChild(trMakeSentenceRow(s, i)));
+}
+
+function trMakeSentenceRow(s, i) {
+  const row = document.createElement('div');
+  row.className = 'trw-card tr-sent';
+  row.dataset.index = i;
+  row.innerHTML = '<div class="trw-title">' + (i + 1) + '. ' + escapeHtml(s) + '</div>' +
+    '<textarea class="tr-sent-input" placeholder="这句的英文译文…"></textarea>' +
+    '<div class="trw-btns">' +
+    '<button class="btn small tr-s-ref">参考译文</button>' +
+    '<button class="btn small tr-s-grade">提交批改</button>' +
+    '<button class="btn small ghost tr-s-collect">收录</button>' +
+    '</div>' +
+    '<div class="tr-s-result"></div>';
+  row.querySelector('.tr-s-ref').onclick = () => trSentenceRef(s, row);
+  row.querySelector('.tr-s-grade').onclick = () => trSentenceGrade(s, i, row);
+  row.querySelector('.tr-s-collect').onclick = () => trCollectPattern(s, row);
+  return row;
+}
+
+// 收录翻译句式：先取参考译文，再弹确认（可勾选 AI 解读、可改内容）
+async function trCollectPattern(zh, row) {
+  const res = row.querySelector('.tr-s-result');
+  const btn = row.querySelector('.tr-s-collect');
+  btn.disabled = true;
+  res.innerHTML = '<div class="status"><span class="dot"></span>准备收录…</div>';
+  try {
+    const r = await llmFetch('/api/trw/sentence/ref', { sentence: zh });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.status); }
+    const d = await r.json();
+    nbCollectPatternUI(zh, d.reference, res);
+  } catch (e) {
+    res.innerHTML = '<div class="placeholder">收录失败：' + escapeHtml(e.message) + '</div>';
+  }
+  btn.disabled = false;
+}
+
+function nbCollectPatternUI(zh, en, container) {
+  container.innerHTML = '<div class="trw-card">' +
+    '<div class="trw-label">中文原句</div><div class="grade-sent">' + escapeHtml(zh) + '</div>' +
+    '<div class="trw-label">参考译文（可修改）</div>' +
+    '<textarea class="tr-sent-input nb-ref-input">' + escapeHtml(en) + '</textarea>' +
+    '<label style="display:block; margin-top:8px; font-size:12px; color:var(--muted)">' +
+    '<input type="checkbox" id="nb-want-explain" checked> AI 解读句式（约多几秒）</label>' +
+    '<div class="trw-btns"><button class="btn small nb-confirm">确认收录</button>' +
+    '<button class="btn small ghost nb-cancel">取消</button></div></div>';
+  container.querySelector('.nb-cancel').onclick = () => { container.innerHTML = ''; };
+  container.querySelector('.nb-confirm').onclick = async () => {
+    const enFinal = container.querySelector('.nb-ref-input').value.trim();
+    const wantExplain = container.querySelector('#nb-want-explain').checked;
+    const cbtn = container.querySelector('.nb-confirm');
+    cbtn.disabled = true;
+    cbtn.textContent = '收录中…';
+    try {
+      const r = await fetch('/api/notebook/pattern', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ zh, en: enFinal, want_explain: wantExplain }),
+      });
+      if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.status); }
+      const d = await r.json();
+      container.innerHTML = '<div class="status">' + (d.duplicate ? '已收录过 ✓' : '已收录 ✓') + '</div>';
+    } catch (e) {
+      container.innerHTML = '<div class="placeholder">收录失败：' + escapeHtml(e.message) + '</div>';
+    }
+  };
+}
+
+function trRenderSentenceResult(row, html) {
+  row.querySelector('.tr-s-result').innerHTML = html;
+}
+
+async function trSentenceRef(s, row) {
+  const res = row.querySelector('.tr-s-result');
+  const btn = row.querySelector('.tr-s-ref');
+  btn.disabled = true;
+  res.innerHTML = '<div class="status"><span class="dot"></span>生成参考译文中…</div>';
+  try {
+    const r = await llmFetch('/api/trw/sentence/ref', { sentence: s });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.status); }
+    const d = await r.json();
+    res.innerHTML = '<div class="grade-block"><div class="grade-label">参考译文（点单词查/播/收）</div></div>';
+    const mb = document.createElement('div');
+    mb.className = 'model-block';
+    wbRenderWords(mb, d.reference, '翻译练习');
+    res.querySelector('.grade-block').appendChild(mb);
+  } catch (e) {
+    res.innerHTML = '<div class="placeholder">参考译文获取失败：' + escapeHtml(e.message) + '</div>';
+  }
+  btn.disabled = false;
+}
+
+async function trSentenceGrade(s, i, row) {
+  const input = row.querySelector('.tr-sent-input');
+  const answer = input.value.trim();
+  const res = row.querySelector('.tr-s-result');
+  if (!answer) { res.innerHTML = '<div class="placeholder">请先写下这句的译文</div>'; return; }
+  const btn = row.querySelector('.tr-s-grade');
+  btn.disabled = true;
+  res.innerHTML = '<div class="status"><span class="dot"></span>AI 正在批改…</div>';
+  try {
+    const r = await llmFetch('/api/trw/sentence/grade', { exercise_id: trTask ? (trTask._history_id || '') : '', sentence: s, answer, index: i });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.status); }
+    const d = await r.json();
+    res.innerHTML = '<div class="grade-block"><span class="grade-score">' + escapeHtml(d.score) +
+      '</span><span class="grade-tag">/15 · ' + escapeHtml(d.tier || '') + '</span></div>' +
+      '<div class="grade-block"><div class="grade-label">参考译文</div></div>' +
+      '<div class="grade-block"><div class="grade-label">点评</div><div class="grade-para">' + escapeHtml(d.comment || '') + '</div></div>';
+    const refBlock = res.querySelectorAll('.grade-block')[1];
+    const mb = document.createElement('div');
+    mb.className = 'model-block';
+    wbRenderWords(mb, d.reference || '', '翻译练习');
+    refBlock.appendChild(mb);
+  } catch (e) {
+    res.innerHTML = '<div class="placeholder">批改失败：' + escapeHtml(e.message) + '</div>';
+  }
+  btn.disabled = false;
+}
+
+// ---------- 口语练习 ----------
+let spExerciseId = null, spSentences = [], spTargetSet = new Set();
+let spStream = null, spRecorder = null, spChunks = [], spTimer = null, spSeconds = 0;
+let spRecIndex = null, spActiveAudio = null, spActiveBtn = null, spActiveOnEnd = null, spBusy = false;
+let spRecordEpoch = 0;  // 录音启动令牌：每次 spStopRecord 自增，失效在途的 getUserMedia
+let spSpeed = 1.0, spActiveWordAudio = null, spActiveWordSpan = null;
+
+function spStatus(html) { $('sp-status').innerHTML = html; }
+function spClearStatus() { $('sp-status').innerHTML = ''; }
+
+window.addEventListener('error', function (e) {
+  if (e.target && (e.target.tagName === 'AUDIO' || e.target.tagName === 'IMG')) return;
+  console.error('[前端错误]', e.message, 'at', e.filename, e.lineno + ':' + e.colno);
+});
+window.addEventListener('unhandledrejection', function (e) {
+  console.error('[未处理的Promise拒绝]', e.reason);
+});
+
+function spSetRecordButtonsDisabled(disabled) {
+  document.querySelectorAll('.sp-record').forEach(b => { b.disabled = disabled; });
+}
+
+// 把文本拆成词节点（逐词着色 / 高亮织入词 / 点击单词单独播放）
+function spWordNodes(text, scoredWords) {
+  const tokens = String(text).split(/([\w']+)/);
+  const nodes = [];
+  let wi = 0;
+  tokens.forEach(tok => {
+    if (/^[\w']+$/.test(tok)) {
+      const span = document.createElement('span');
+      span.className = 'sp-word';
+      span.textContent = tok;
+      const info = scoredWords ? scoredWords[wi] : null;
+      if (info) {
+        span.classList.add(info.ok ? 'ok' : 'bad');
+        span.title = info.ok ? '点击查翻译/播放/收录' : '发音待改进 · 点击查翻译/播放/收录';
+        wi++;
+      } else {
+        span.title = '点击查翻译/播放/收录';
+        if (spTargetSet.has(tok.toLowerCase())) {
+          span.classList.add('hl');
+        }
+      }
+      span.onclick = () => wbShowBubble(span, tok, text, '口语练习');
+      nodes.push(span);
+    } else {
+      nodes.push(document.createTextNode(tok));
+    }
+  });
+  return nodes;
+}
+
+// 点击单词：单独朗读该词（Kokoro 合成，带缓存）
+function spPlayWord(text, span) {
+  spStopPlayback();
+  if (spActiveWordAudio) { try { spActiveWordAudio.pause(); } catch (e) {} spActiveWordAudio = null; }
+  if (spActiveWordSpan) { spActiveWordSpan.classList.remove('cur'); spActiveWordSpan = null; }
+  const a = new Audio('/api/tts/word?text=' + encodeURIComponent(text) + '&_=' + Date.now());
+  a.playbackRate = spSpeed;
+  spActiveWordAudio = a;
+  spActiveWordSpan = span;
+  span.classList.add('cur');
+  a.onended = () => { spActiveWordAudio = null; span.classList.remove('cur'); spActiveWordSpan = null; };
+  a.onerror = () => { spActiveWordAudio = null; span.classList.remove('cur'); spActiveWordSpan = null; };
+  a.play().catch(() => {});
+}
+
+function spRenderErrors(errors) {
+  if (!errors || !errors.length) return '';
+  let html = '<div class="grade-block"><div class="grade-label">发音问题</div>';
+  errors.forEach(e => {
+    html += '<div class="grade-review"><b>' + escapeHtml(e.word) + '</b>：' +
+      escapeHtml(e.expected) + ' → ' + escapeHtml(e.actual);
+    if (e.confidence != null) html += '（置信度 ' + Math.round(e.confidence * 100) + '%）';
+    const badPhones = (e.phones || []).filter(p => p.expected !== p.heard);
+    if (badPhones.length) {
+      html += '<div class="grade-sent">' +
+        badPhones.map(p => escapeHtml(p.expected) + ' → ' + escapeHtml(p.heard)).join('；') +
+        '</div>';
+    }
+    html += '</div>';
+  });
+  html += '</div>';
+  return html;
+}
+
+function spStopRecord() {
+  spStopPlayback();  // 开始录音/生成新题时停掉正在播放的音频，避免麦克风回授
+  spRecordEpoch++;   // 失效所有在途 getUserMedia，防止双击竞态导致录音互相覆盖
+  if (spTimer) { clearInterval(spTimer); spTimer = null; }
+  if (spStream) { spStream.getTracks().forEach(t => t.stop()); spStream = null; }
+  if (spRecorder) {
+    spRecorder.onstop = null;  // 关键：中止录音时不得触发评分回调
+    if (spRecorder.state !== 'inactive') { try { spRecorder.stop(); } catch (e) {} }
+    spRecorder = null;
+  }
+  spChunks = [];
+  spRecIndex = null;
+  document.querySelectorAll('.sp-record').forEach(b => { b.textContent = '开始朗读'; b.classList.remove('recording'); });
+}
+
+function spSetPlayBtn(btn, playing) {
+  if (!btn) return;
+  if (playing) {
+    if (!btn.dataset.origText) btn.dataset.origText = btn.textContent;
+    btn.textContent = btn.classList.contains('sp-replay') ? '回放中…' : '播放中…';
+    btn.classList.add('playing');
+  } else {
+    if (btn.dataset.origText) btn.textContent = btn.dataset.origText;
+    btn.classList.remove('playing');
+  }
+}
+
+function spStopPlayback() {
+  if (spActiveAudio) { try { spActiveAudio.pause(); } catch (e) {} spActiveAudio = null; }
+  if (spActiveBtn) { spSetPlayBtn(spActiveBtn, false); spActiveBtn = null; }
+  if (spActiveOnEnd) { try { spActiveOnEnd(); } catch (e) {} spActiveOnEnd = null; }
+  // 也停掉「单词单独播放」，否则点单词发音后立刻开始朗读会把扬声器声音录进麦克风
+  if (spActiveWordAudio) { try { spActiveWordAudio.pause(); } catch (e) {} spActiveWordAudio = null; }
+  if (spActiveWordSpan) { spActiveWordSpan.classList.remove('cur'); spActiveWordSpan = null; }
+}
+
+// opts.onProgress(0..1)：播放进度回调（用于逐词/逐句高亮）；opts.onEnd：结束时清理
+function spPlayAudio(url, btn, opts) {
+  opts = opts || {};
+  console.log('[口语] 播放音频：', url);
+  // 点击同一个正在播放的按钮 → 停止播放
+  if (spActiveBtn === btn && spActiveAudio && !spActiveAudio.paused) {
+    spStopPlayback();
+    return;
+  }
+  spStopPlayback();
+  const a = new Audio(url);
+  a.playbackRate = spSpeed;  // 范本/回放跟随语速选择
+  spActiveAudio = a;
+  spActiveBtn = btn;
+  spActiveOnEnd = opts.onEnd || null;
+  spSetPlayBtn(btn, true);
+  a.ontimeupdate = () => {
+    if (opts.onProgress && a.duration) opts.onProgress(a.currentTime, a.duration);
+  };
+  a.onended = () => { spActiveAudio = null; spSetPlayBtn(btn, false); spActiveBtn = null; if (opts.onEnd) opts.onEnd(); spActiveOnEnd = null; };
+  a.onerror = () => { spActiveAudio = null; spSetPlayBtn(btn, false); spActiveBtn = null; if (opts.onEnd) opts.onEnd(); spActiveOnEnd = null; console.error('[口语] 音频加载失败：', url); spStatus('音频加载失败，请重试'); };
+  a.play().catch(err => {
+    spActiveAudio = null; spSetPlayBtn(btn, false); spActiveBtn = null; if (opts.onEnd) opts.onEnd(); spActiveOnEnd = null;
+    console.error('[口语] 播放被拒绝：', err);
+    spStatus('播放失败：' + escapeHtml(err && err.message ? err.message : '未知错误'));
+  });
+}
+
+// 播放范本：逐词变蓝（用 kokoro 词级时间戳精确对齐）
+function spPlayRef(index) {
+  const row = document.querySelector('.sp-sent[data-index="' + index + '"]');
+  const btn = row ? row.querySelector('.sp-play-ref') : null;
+  const wordSpans = row ? Array.from(row.querySelectorAll('.sp-sent-text .sp-word')) : [];
+  const wt = (spSentences[index] && spSentences[index].word_timeline) || [];
+  spPlayAudio('/api/speaking/audio?id=' + spExerciseId + '&kind=ref&i=' + index, btn, {
+    onProgress: (t, dur) => {
+      if (wt.length) {
+        // 精确：按词级时间戳定位当前词
+        let wi = 0;
+        for (let j = 0; j < wt.length; j++) {
+          if (t >= wt[j].start) wi = j + 1; else break;
+        }
+        wi = Math.min(wi, wordSpans.length);
+        wordSpans.forEach((s, i) => s.classList.toggle('read', i < wi));
+      } else {
+        // 兜底：比例估算
+        const wi = Math.floor((t / dur) * wordSpans.length);
+        wordSpans.forEach((s, i) => s.classList.toggle('read', i < wi));
+      }
+    },
+    onEnd: () => { wordSpans.forEach(s => s.classList.remove('read')); },
+  });
+}
+
+// 语速选择：范本 / 回放 / 单词播放共用
+document.querySelectorAll('.sp-speed').forEach(b => {
+  b.onclick = () => {
+    spSpeed = parseFloat(b.dataset.rate) || 1.0;
+    document.querySelectorAll('.sp-speed').forEach(x => x.classList.toggle('active', x === b));
+    if (spActiveAudio) spActiveAudio.playbackRate = spSpeed;      // 正在播放时立即生效
+    if (spActiveWordAudio) spActiveWordAudio.playbackRate = spSpeed;
+  };
+});
+
+async function spToggleTranslation(text, btn) {
+  const row = btn.closest('.sp-sent');
+  const tr = row.querySelector('.translation');
+  if (tr.style.display === 'block') { tr.style.display = 'none'; return; }
+  if (transCache[text]) { tr.textContent = transCache[text]; tr.style.display = 'block'; return; }
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const r = await llmFetch('/api/translate', { text });
+    if (!r.ok) throw new Error(r.status);
+    const d = await r.json();
+    transCache[text] = d.translation;
+    tr.textContent = d.translation; tr.style.display = 'block';
+  } catch (e) {
+    tr.textContent = '翻译失败，稍后再试'; tr.style.display = 'block';
+  }
+  btn.disabled = false; btn.textContent = '译';
+}
+
+function spMakeSentenceRow(s) {
+  const row = document.createElement('div');
+  row.className = 'sp-sent';
+  row.dataset.index = s.index;
+  const head = document.createElement('div');
+  head.className = 'sp-sent-head';
+  const txt = document.createElement('span');
+  txt.className = 'sp-sent-text';
+  spWordNodes(s.text, null).forEach(n => txt.appendChild(n));
+  head.appendChild(txt);
+  const tb = document.createElement('button');
+  tb.className = 'translate-btn'; tb.textContent = '译'; tb.title = '翻译';
+  tb.onclick = () => spToggleTranslation(s.text, tb);
+  head.appendChild(tb);
+  const pb = document.createElement('button');
+  pb.className = 'translate-btn sp-play-ref'; pb.textContent = '播放范本'; pb.title = '听范本发音';
+  pb.onclick = () => spPlayRef(s.index);
+  head.appendChild(pb);
+  const rb = document.createElement('button');
+  rb.className = 'btn small sp-record'; rb.textContent = '开始朗读';
+  rb.onclick = () => spToggleRecord(s.index);
+  head.appendChild(rb);
+  const yb = document.createElement('button');
+  yb.className = 'translate-btn sp-replay'; yb.textContent = '回放'; yb.title = '回放我的录音';
+  yb.disabled = true;
+  yb.onclick = () => spPlayAudio('/api/speaking/audio?id=' + spExerciseId + '&kind=user&i=' + s.index + '&_=' + Date.now(), yb);
+  head.appendChild(yb);
+  row.appendChild(head);
+  const tr = document.createElement('div');
+  tr.className = 'translation';
+  row.appendChild(tr);
+  const grade = document.createElement('div');
+  grade.className = 'sp-sent-grade';
+  row.appendChild(grade);
+  return row;
+}
+
+function spRenderSentences() {
+  const box = $('sp-sentences');
+  box.innerHTML = '';
+  (spSentences || []).forEach(s => box.appendChild(spMakeSentenceRow(s)));
+}
+
+function spToggleRecord(index) {
+  if (spBusy) { spStatus('正在评分，请稍候…'); return; }
+  if (spRecIndex === index && spRecorder && spRecorder.state === 'recording') {
+    // 停止并评分：锁定录音按钮，评分期间禁止再次录音
+    spBusy = true;
+    spSetRecordButtonsDisabled(true);
+    const rb = document.querySelector('.sp-sent[data-index="' + index + '"] .sp-record');
+    if (rb) { rb.textContent = '评分中…'; }
+    spRecorder.stop();
+    return;
+  }
+  spStopRecord();
+  spRecIndex = index;
+  const epoch = spRecordEpoch;
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    if (spBusy || epoch !== spRecordEpoch) { stream.getTracks().forEach(t => t.stop()); return; }  // 兜底：评分期间/新一次录音已开始则不录音
+    spStream = stream;
+    spRecorder = new MediaRecorder(stream);
+    spChunks = [];
+    spRecorder.ondataavailable = e => { if (e.data && e.data.size) spChunks.push(e.data); };
+    spRecorder.onstop = () => spOnRecordStop(index);
+    spRecorder.start();
+    const rb = document.querySelector('.sp-sent[data-index="' + index + '"] .sp-record');
+    if (rb) { rb.textContent = '停止并评分'; rb.classList.add('recording'); }
+    spSeconds = 0;
+    spStatus('<span class="rec-dot"></span>正在朗读第 ' + (index + 1) + ' 句…');
+    spTimer = setInterval(() => {
+      spSeconds++;
+      if (spSeconds >= 30) spRecorder.stop();
+    }, 1000);
+  }).catch(() => spStatus('无法访问麦克风：请允许权限并确认已连接麦克风'));
+}
+
+async function spOnRecordStop(index) {
+  if (spTimer) { clearInterval(spTimer); spTimer = null; }
+  if (spStream) { spStream.getTracks().forEach(t => t.stop()); spStream = null; }
+  const rb = document.querySelector('.sp-sent[data-index="' + index + '"] .sp-record');
+  if (rb) { rb.textContent = '开始朗读'; rb.classList.remove('recording'); }
+  // 立即捕获本地快照，避免随后用户操作或新录音改写全局状态
+  const mime = spRecorder ? (spRecorder.mimeType || 'audio/webm') : 'audio/webm';
+  const chunks = spChunks;
+  spChunks = [];
+  spRecIndex = null;
+  spRecorder = null;
+  if (!chunks.length) {
+    spBusy = false;
+    spSetRecordButtonsDisabled(false);
+    spClearStatus(); spStatus('未录到声音，请重试');
+    return;
+  }
+  const blob = new Blob(chunks, { type: mime });
+  if (blob.size < 1500) {  // 录音过短（约 <0.1s），视为未录到有效声音
+    spBusy = false;
+    spSetRecordButtonsDisabled(false);
+    spClearStatus(); spStatus('录音过短，请靠近麦克风重新朗读');
+    return;
+  }
+  const sentence = (spSentences || []).find(s => s.index === index);
+  if (!sentence) { spBusy = false; spSetRecordButtonsDisabled(false); return; }
+  $('sp-status').innerHTML = '<span class="dot"></span>正在评分第 ' + (index + 1) + ' 句…';
+  console.log('[口语] 开始评分：', index, 'blob=', blob.size, 'bytes', 'mime=', mime);
+  try {
+    const b64 = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result).split(',')[1]);
+      fr.onerror = reject;
+      fr.readAsDataURL(blob);
+    });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 120000);  // 120s 超时，防挂死
+    const r = await fetch('/api/speaking/assess', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ exercise_id: spExerciseId, audio: b64, audio_mime: mime, text: sentence.text, sentence_index: index }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.status); }
+    const d = await r.json();
+    console.log('[口语] 评分完成：', index, 'overall=', d.overall);
+    spClearStatus();
+    spRenderSentenceScore(index, d);
+  } catch (e) {
+    console.error('[口语] 评分失败：', e);
+    spClearStatus();
+    spStatus('评分失败：' + escapeHtml(e.message || e));
+  } finally {
+    spBusy = false;
+    spSetRecordButtonsDisabled(false);
+  }
+}
+
+function spRenderSentenceScore(index, d) {
+  const row = document.querySelector('.sp-sent[data-index="' + index + '"]');
+  if (!row) return;
+  const sentence = (spSentences || []).find(s => s.index === index);
+  if (sentence) {
+    const txt = row.querySelector('.sp-sent-text');
+    txt.innerHTML = '';
+    spWordNodes(sentence.text, d.words).forEach(n => txt.appendChild(n));
+  }
+  const yb = row.querySelector('.sp-replay');
+  if (yb) yb.disabled = false;
+  const grade = row.querySelector('.sp-sent-grade');
+  let html = '<div class="grade-block"><span class="sp-mini-score">' + escapeHtml(d.overall) +
+    '</span><span class="grade-tag">/100 · ' + escapeHtml(d.band || '') + '</span></div>';
+  if (d.transcribe) html += '<div class="grade-sent">系统听到：' + escapeHtml(d.transcribe) + '</div>';
+  html += spRenderErrors(d.errors);
+  if (d.hint) html += '<div class="grade-sent">' + escapeHtml(d.hint) + '</div>';
+  grade.innerHTML = html;
+}
+
+$('sp-generate').onclick = async () => {
+  const btn = $('sp-generate');
+  btn.disabled = true;
+  spClearStatus();
+  spStopRecord();
+  spBusy = false;
+  spSetRecordButtonsDisabled(false);
+  spExerciseId = null; spSentences = []; spTargetSet = new Set();
+  $('sp-task').style.display = 'none';
+  $('sp-status').innerHTML = '<span class="dot"></span>正在出一篇朗读题…';
+  try {
+    const r = await llmFetch('/api/speaking/generate', {});
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.status); }
+    const d = await r.json();
+    spExerciseId = d.id;
+    spSentences = d.sentences || [];
+    spTargetSet = new Set((d.words || []).map(w => String(w).toLowerCase()));
+    $('sp-words-meta').textContent = (d.words && d.words.length)
+      ? '织入六级词 ' + d.words.length + ' 个：' + d.words.join('、') : '';
+    spRenderSentences();
+    $('sp-task').style.display = 'block';
+    spClearStatus();
+  } catch (e) {
+    spClearStatus();
+    $('sp-status').innerHTML = '出错了：' + escapeHtml(e.message);
+  }
+  btn.disabled = false;
+};
 
 // ---------- Tab 切换 ----------
 document.querySelectorAll('.tab').forEach(t => {
@@ -810,17 +1782,299 @@ document.querySelectorAll('.tab').forEach(t => {
     document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
     t.classList.add('active');
     $(t.dataset.panel).classList.add('active');
+    if (t.dataset.panel === 'p-notebook') nbLoad();
   };
 });
 
 loadModels();
+nbLoad();
+
+// ---------- 笔记本 ----------
+let nbData = { words: [], patterns: [], writing: [] };
+let nbCat = 'words';
+let nbReviewMode = false, nbReviewIdx = 0, nbReviewList = [];
+
+async function nbLoad() {
+  try {
+    const r = await fetch('/api/notebook');
+    if (r.ok) nbData = await r.json();
+    else nbData = { words: [], patterns: [], writing: [] };
+  } catch (e) {
+    nbData = { words: [], patterns: [], writing: [] };
+  }
+  nbRender();
+}
+
+function nbRender() {
+  if (nbReviewMode) { nbRenderReview(); return; }
+  const list = nbData[nbCat] || [];
+  const box = $('nb-list');
+  if (!list.length) {
+    box.innerHTML = '<div class="hist-empty">还没有收录内容</div>';
+    return;
+  }
+  box.innerHTML = '';
+  [...list].reverse().forEach(entry => box.appendChild(nbMakeEntry(entry)));
+}
+
+function nbPlay(text) {
+  const a = new Audio('/api/tts/word?text=' + encodeURIComponent(String(text).slice(0, 400)) + '&_=' + Date.now());
+  a.play().catch(() => {});
+}
+
+function nbMakeEntry(entry) {
+  const row = document.createElement('div');
+  row.className = 'trw-card nb-entry';
+  row.dataset.nbId = entry.id;
+  if (nbCat === 'words') {
+    // 生词：单词可点（气泡），保留 🔊 朗读
+    const head = document.createElement('div');
+    head.className = 'nb-word';
+    const b = document.createElement('b');
+    wbRenderWords(b, entry.word, '笔记本');
+    head.appendChild(b);
+    const play = document.createElement('span');
+    play.className = 'nb-play'; play.title = '播放'; play.textContent = '🔊';
+    play.onclick = () => nbPlay(entry.word);
+    head.appendChild(play);
+    row.appendChild(head);
+    const m = document.createElement('div');
+    m.className = 'grade-sent'; m.textContent = entry.meaning || '';
+    row.appendChild(m);
+    if (entry.context) {
+      const c = document.createElement('div');
+      c.className = 'grade-sent';
+      c.appendChild(document.createTextNode('例：'));
+      wbRenderWords(c, entry.context, '笔记本');
+      row.appendChild(c);
+    }
+    const d = document.createElement('div');
+    d.className = 'hi-date'; d.textContent = (entry.date || '') + ' · ' + (entry.source || '');
+    row.appendChild(d);
+  } else if (nbCat === 'patterns') {
+    // 翻译句式：英文逐词可点，无 🔊
+    const zh = document.createElement('div');
+    zh.className = 'trw-title'; zh.textContent = entry.zh || '';
+    row.appendChild(zh);
+    const en = document.createElement('div');
+    en.className = 'model-block'; en.style.marginTop = '6px';
+    wbRenderWords(en, entry.en || '', '笔记本');
+    row.appendChild(en);
+    if (entry.explain) {
+      const ex = document.createElement('div');
+      ex.className = 'grade-sent'; ex.textContent = '解读：' + (entry.explain || '');
+      row.appendChild(ex);
+    }
+    const d = document.createElement('div');
+    d.className = 'hi-date'; d.textContent = (entry.date || '') + ' · ' + (entry.source || '');
+    row.appendChild(d);
+  } else {
+    // 写作表达：逐词可点，无 🔊
+    const txt = document.createElement('div');
+    txt.className = 'model-block';
+    wbRenderWords(txt, entry.text || '', '笔记本');
+    row.appendChild(txt);
+    const d = document.createElement('div');
+    d.className = 'hi-date'; d.textContent = (entry.date || '') + ' · ' + (entry.source || '');
+    row.appendChild(d);
+  }
+  const ops = document.createElement('div');
+  ops.className = 'hi-ops nb-ops';
+  const editBtn = document.createElement('button');
+  editBtn.className = 'hist-restore'; editBtn.textContent = '编辑';
+  editBtn.onclick = () => nbEdit(entry, row);
+  const delBtn = document.createElement('button');
+  delBtn.className = 'hist-del'; delBtn.textContent = '删除';
+  delBtn.onclick = () => nbDelete(entry.id);
+  ops.appendChild(editBtn); ops.appendChild(delBtn);
+  row.appendChild(ops);
+  return row;
+}
+
+function nbEdit(entry, row) {
+  let fields;
+  if (nbCat === 'words') {
+    fields = [['word', '单词'], ['meaning', '释义'], ['context', '例句']];
+  } else if (nbCat === 'patterns') {
+    fields = [['zh', '中文'], ['en', '英文'], ['explain', '解读']];
+  } else {
+    fields = [['text', '内容']];
+  }
+  row.innerHTML = fields.map(([, label]) =>
+    '<div class="trw-label">' + label + '</div><textarea class="nb-edit-input"></textarea>').join('');
+  const inputs = row.querySelectorAll('.nb-edit-input');
+  const autoGrow = (el) => {
+    el.style.height = 'auto';
+    el.style.height = Math.max(48, el.scrollHeight) + 'px';
+  };
+  fields.forEach(([k], i) => {
+    inputs[i].value = entry[k] || '';
+    autoGrow(inputs[i]);
+    inputs[i].addEventListener('input', () => autoGrow(inputs[i]));
+  });
+  const ops = document.createElement('div');
+  ops.className = 'hi-ops';
+  const save = document.createElement('button');
+  save.className = 'hist-restore'; save.textContent = '保存';
+  save.onclick = async () => {
+    const updated = {};
+    fields.forEach(([k], i) => { updated[k] = inputs[i].value.trim(); });
+    try {
+      const r = await fetch('/api/notebook/update', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: nbCat, id: entry.id, entry: updated }),
+      });
+      if (!r.ok) throw new Error(r.status);
+      await nbLoad();
+    } catch (e) {
+      alert('保存失败：' + e.message);
+    }
+  };
+  const cancel = document.createElement('button');
+  cancel.className = 'hist-del'; cancel.textContent = '取消';
+  cancel.onclick = () => nbRender();
+  ops.appendChild(save); ops.appendChild(cancel);
+  row.appendChild(ops);
+}
+
+async function nbDelete(id) {
+  try {
+    await fetch('/api/notebook?category=' + nbCat + '&id=' + id, { method: 'DELETE' });
+    await nbLoad();
+  } catch (e) {
+    alert('删除失败：' + e.message);
+  }
+}
+
+document.querySelectorAll('.nb-cat').forEach(b => {
+  b.onclick = () => {
+    nbCat = b.dataset.cat;
+    document.querySelectorAll('.nb-cat').forEach(x => x.classList.toggle('active', x === b));
+    nbReviewMode = false;
+    $('nb-review-box').style.display = 'none';
+    $('nb-list').style.display = 'block';
+    nbRender();
+  };
+});
+
+$('nb-review').onclick = () => {
+  const list = nbData[nbCat] || [];
+  if (!list.length) return;
+  nbReviewMode = true;
+  nbReviewList = [...list].reverse();
+  nbReviewIdx = 0;
+  $('nb-list').style.display = 'none';
+  $('nb-review-box').style.display = 'block';
+  nbRenderReview();
+};
+
+function nbRenderReview() {
+  const box = $('nb-review-box');
+  const e = nbReviewList[nbReviewIdx];
+  if (!e) return;
+  box.innerHTML = '';
+  const card = document.createElement('div');
+  card.className = 'trw-card';
+  card.style.textAlign = 'center';
+  if (nbCat === 'words') {
+    const wd = document.createElement('div');
+    wd.style.fontSize = '24px';
+    const b = document.createElement('b');
+    wbRenderWords(b, e.word, '笔记本');
+    wd.appendChild(b);
+    const play = document.createElement('span');
+    play.className = 'nb-play'; play.title = '播放'; play.textContent = '🔊';
+    play.onclick = () => nbPlay(e.word);
+    wd.appendChild(play);
+    card.appendChild(wd);
+    const ans = document.createElement('div');
+    ans.id = 'nb-review-ans'; ans.className = 'grade-sent';
+    ans.style.display = 'none'; ans.style.marginTop = '12px';
+    ans.textContent = e.meaning || '';
+    if (e.context) {
+      ans.appendChild(document.createElement('br'));
+      const cc = document.createElement('span');
+      cc.appendChild(document.createTextNode('例：'));
+      wbRenderWords(cc, e.context, '笔记本');
+      ans.appendChild(cc);
+    }
+    card.appendChild(ans);
+  } else if (nbCat === 'patterns') {
+    const zh = document.createElement('div');
+    zh.style.fontSize = '16px'; zh.textContent = e.zh || '';
+    card.appendChild(zh);
+    const ans = document.createElement('div');
+    ans.id = 'nb-review-ans'; ans.className = 'model-block';
+    ans.style.display = 'none'; ans.style.marginTop = '12px'; ans.style.textAlign = 'left';
+    wbRenderWords(ans, e.en || '', '笔记本');
+    if (e.explain) {
+      const ex = document.createElement('div');
+      ex.className = 'grade-sent'; ex.textContent = '解读：' + (e.explain || '');
+      ans.appendChild(ex);
+    }
+    card.appendChild(ans);
+  } else {
+    const txt = document.createElement('div');
+    txt.className = 'model-block'; txt.style.textAlign = 'left';
+    wbRenderWords(txt, e.text || '', '笔记本');
+    card.appendChild(txt);
+  }
+  if (nbCat === 'words' || nbCat === 'patterns') {
+    const fb = document.createElement('div');
+    fb.style.marginTop = '12px';
+    const btn = document.createElement('button');
+    btn.className = 'btn small'; btn.id = 'nb-review-flip'; btn.textContent = '看答案';
+    btn.onclick = () => { const ans = box.querySelector('#nb-review-ans'); if (ans) ans.style.display = 'block'; };
+    fb.appendChild(btn);
+    card.appendChild(fb);
+  }
+  box.appendChild(card);
+  const nav = document.createElement('div');
+  nav.className = 'trw-btns'; nav.style.justifyContent = 'center';
+  nav.innerHTML = '<button class="btn small" id="nb-prev">上一张</button>' +
+    '<span class="status">' + (nbReviewIdx + 1) + ' / ' + nbReviewList.length + '</span>' +
+    '<button class="btn small" id="nb-next">下一张</button>' +
+    '<span style="flex:1"></span>' +
+    '<button class="btn small ghost" id="nb-exit-review">退出复习</button>';
+  box.appendChild(nav);
+  $('nb-prev').onclick = () => { if (nbReviewIdx > 0) { nbReviewIdx--; nbRenderReview(); } };
+  $('nb-next').onclick = () => { if (nbReviewIdx < nbReviewList.length - 1) { nbReviewIdx++; nbRenderReview(); } };
+  $('nb-exit-review').onclick = () => {
+    nbReviewMode = false;
+    $('nb-review-box').style.display = 'none';
+    $('nb-list').style.display = 'block';
+    nbRender();
+  };
+}
+
+$('nb-export').onclick = () => {
+  const list = nbData[nbCat] || [];
+  if (!list.length) return;
+  const labels = { words: '生词', patterns: '翻译句式', writing: '写作表达' };
+  let txt = '===== 笔记本 · ' + labels[nbCat] + ' =====\n\n';
+  [...list].reverse().forEach(e => {
+    if (nbCat === 'words') {
+      txt += e.word + '  ' + (e.meaning || '') + '\n' + (e.context ? '  例: ' + e.context + '\n' : '') + '\n';
+    } else if (nbCat === 'patterns') {
+      txt += e.zh + '\n' + e.en + '\n' + (e.explain ? '  解读: ' + e.explain + '\n' : '') + '\n';
+    } else {
+      txt += e.text + '\n\n';
+    }
+  });
+  const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '笔记本_' + labels[nbCat] + '.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
 
 // ---------- 历史归档：列表 / 恢复 / 删除 ----------
 let histType = 'daily';
 
 function openHistory(type) {
   histType = type;
-  const labels = { daily: '每日一篇', story: '互动故事', writing: '写作', translation: '翻译' };
+  const labels = { daily: '每日一篇', story: '互动故事', writing: '写作', translation: '翻译', speaking: '口语练习' };
   $('hist-title').textContent = labels[type] + ' · 历史记录';
   $('hist-overlay').classList.add('show');
   loadHistoryList();
@@ -875,7 +2129,7 @@ async function restoreHistory(id) {
 }
 
 function switchTabForType(type) {
-  const panelId = { daily: 'p-daily', story: 'p-story', writing: 'p-writing', translation: 'p-translation' }[type];
+  const panelId = { daily: 'p-daily', story: 'p-story', writing: 'p-writing', translation: 'p-translation', speaking: 'p-speaking' }[type];
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
   document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
   const tab = document.querySelector(`.tab[data-panel="${panelId}"]`);
@@ -885,12 +2139,42 @@ function switchTabForType(type) {
 
 function renderRestored(item) {
   if (item.type === 'daily') {
-    let html = `<div class="meta">题型 <b>${escapeHtml(item.form || '')}</b> · 恢复于历史</div>`;
-    const box = document.createElement('div');
-    box.innerHTML = html;
-    (item.units || []).forEach(u => box.appendChild(makeSentenceRow(u.text, u.speaker === 'N' ? null : u.speaker)));
+    const result = document.createElement('div');
+    let meta = `题型 <b>${escapeHtml(item.form || '')}</b>`;
+    if (item.duration_s) meta += ` · 时长 <b>${item.duration_s}s</b>`;
+    meta += ' · 恢复于历史';
+    result.innerHTML = `<div class="meta">${meta}</div>`;
+    // 听力音频同步恢复
+    const audio = document.createElement('audio');
+    audio.controls = true;
+    audio.style.width = '100%';
+    audio.style.marginBottom = '12px';
+    audio.src = `/api/daily/audio?date=${item.date}` + (item.audio_dir ? `&dir=${encodeURIComponent(item.audio_dir)}` : '');
+    const errEl = document.createElement('div');
+    errEl.className = 'audio-error';
+    errEl.style.display = 'none';
+    audio.onerror = () => { errEl.textContent = '音频加载失败：wav 文件未找到。'; errEl.style.display = 'block'; };
+    result.appendChild(audio);
+    result.appendChild(errEl);
+    const unitsBox = document.createElement('div');
+    unitsBox.className = 'daily-units';
+    const unitRows = [];
+    (item.units || []).forEach(u => {
+      const row = makeSentenceRow(u.text, u.speaker === 'N' ? null : u.speaker, true, '每日一篇');
+      unitRows.push(row);
+      unitsBox.appendChild(row);
+    });
+    result.appendChild(unitsBox);
+    // 逐词高亮：优先词级时间戳，缺省按比例估算
+    const timeline = item.timeline || [];
+    const wordTimeline = item.word_timeline || [];
+    const wordSpansPerRow = collectDailyWordSpans(unitRows);
+    audio.ontimeupdate = () => {
+      highlightDailyWords(unitRows, wordSpansPerRow, timeline, wordTimeline, audio.currentTime, audio.duration);
+    };
+    audio.onended = () => { wordSpansPerRow.flat().forEach(s => s.classList.remove('read')); };
     $('daily-result').innerHTML = '';
-    $('daily-result').appendChild(box);
+    $('daily-result').appendChild(result);
     $('daily-status').textContent = '已从历史恢复'; 
   } else if (item.type === 'story') {
     const area = $('story-area');
@@ -909,33 +2193,55 @@ function renderRestored(item) {
       }
     });
     $('story-status').textContent = '已从历史恢复（此段已存档，不可继续推进）';
-  } else if (item.type === 'writing' || item.type === 'translation') {
-    const p = item.type === 'writing' ? 'wr' : 'tr';
-    $(p + '-task').innerHTML = `<div class="trw-title">${escapeHtml((item.task && item.task.title) || (item.type === 'translation' ? '汉译英' : ''))}</div>`;
-    if (item.task && item.task.image_desc) $(p + '-task').innerHTML += `<div class="trw-meta">【图/表】${escapeHtml(item.task.image_desc)}</div>`;
-    if (item.task && item.task.material) $(p + '-task').innerHTML += `<div class="trw-meta">${escapeHtml(item.task.material)}</div>`;
-    $(p + '-input').value = item.answer || '';
-    $(p + '-grade').innerHTML = '';
+  } else if (item.type === 'writing') {
+    // 用面板自身逻辑恢复：同步闭包 task、启用提交按钮（旧实现只填 DOM，导致提交时带着旧 task）
+    const task = Object.assign({}, item.task || {}, { _history_id: item.id });
+    wrPanel.renderTask(task);
+    wrPanel.setAnswer(item.answer || '');
     const g = item.grade || {};
     if (g.score !== undefined) {
-      let html = `<div class="grade-block"><span class="grade-score">${g.score}</span><span class="grade-tag">/15 · ${escapeHtml(g.tier || '')}</span></div>`;
-      if (item.type === 'writing') {
-        if (g.paras && g.paras.length) {
-          html += `<div class="grade-block"><div class="grade-label">逐段批注</div>`;
-          g.paras.forEach(x => { html += `<div class="grade-para"><b>${escapeHtml(x.para || '')}</b>：${escapeHtml(x.comment || '')}</div>`; });
-          html += '</div>';
-        }
-        if (g.model) html += `<div class="grade-block"><div class="grade-label">同题范文</div><div class="model-block">${escapeHtml(g.model)}</div></div>`;
-      } else {
-        if (g.reference) html += `<div class="grade-block"><div class="grade-label">参考译文</div><div class="model-block">${escapeHtml(g.reference)}</div></div>`;
-        if (g.reviews && g.reviews.length) {
-          html += `<div class="grade-block"><div class="grade-label">逐句点评</div>`;
-          g.reviews.forEach(x => { html += `<div class="grade-review">${escapeHtml(x.comment || '')}<div class="grade-sent">考生：${escapeHtml(x.sentence || '')} ｜ 参考：${escapeHtml(x.reference || '')}</div></div>`; });
-          html += '</div>';
-        }
-      }
-      $(p + '-grade').innerHTML = html;
+      wrPanel.renderGrade(Object.assign({ type: 'writing' }, g));
     }
+  } else if (item.type === 'translation') {
+    // 整段模式
+    trTask = Object.assign({}, item.task || {}, { _history_id: item.id });
+    trRenderTask(trTask);
+    $('tr-input').value = item.answer || '';
+    const g = item.grade || {};
+    if (g.score !== undefined) {
+      trRenderWholeGrade(g);
+    } else {
+      $('tr-grade').innerHTML = '';
+    }
+    // 单句模式：渲染并回填每句的译文与批改
+    trRenderSentences();
+    const sgs = item.sentence_grades || {};
+    Object.keys(sgs).forEach(k => {
+      const idx = parseInt(k, 10);
+      const row = document.querySelector('.tr-sent[data-index="' + idx + '"]');
+      if (!row || !sgs[k]) return;
+      row.querySelector('.tr-sent-input').value = sgs[k].answer || '';
+      const gr = sgs[k].grade || {};
+      row.querySelector('.tr-s-result').innerHTML =
+        '<div class="grade-block"><span class="grade-score">' + (gr.score !== undefined ? gr.score : '') +
+        '</span><span class="grade-tag">/15 · ' + escapeHtml(gr.tier || '') + '</span></div>' +
+        '<div class="grade-block"><div class="grade-label">参考译文</div><div class="model-block">' + escapeHtml(gr.reference || '') + '</div></div>' +
+        '<div class="grade-block"><div class="grade-label">点评</div><div class="grade-para">' + escapeHtml(gr.comment || '') + '</div></div>';
+    });
+  } else if (item.type === 'speaking') {
+    spExerciseId = item.id || null;
+    spSentences = item.sentences || [];
+    spTargetSet = new Set((item.target_words || []).map(w => String(w).toLowerCase()));
+    $('sp-words-meta').textContent = (item.target_words && item.target_words.length)
+      ? '织入六级词 ' + item.target_words.length + ' 个：' + item.target_words.join('、') : '';
+    spRenderSentences();
+    const scores = item.sentence_scores || {};
+    Object.keys(scores).forEach(k => {
+      const idx = parseInt(k, 10);
+      if (!isNaN(idx)) spRenderSentenceScore(idx, scores[k]);
+    });
+    $('sp-task').style.display = 'block';
+    $('sp-status').textContent = '已从历史恢复';
   }
 }
 

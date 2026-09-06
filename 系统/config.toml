@@ -4,8 +4,8 @@
 port = 8123
 
 [llm]
-# 质量开关：local = 本地 Qwen（免费快速） / cloud = LiteLLM 网关云端（质量对比用）
-active = "local"
+# 生成模型：cloud = 云端 DeepSeek（本地 Qwen 已停用，显存留给 TTS/评分模型）
+active = "cloud"
 
 [llm.local]
 base_url = "http://127.0.0.1:8081/v1"
@@ -44,6 +44,12 @@ length_lecture = 400
 segment_words_min = 80   # 互动每段词数下限
 segment_words_max = 120  # 上限
 history_max_segments = 8 # 续写时携带的最近段数（控 context）
+
+[speaking]
+passage_words = 100       # 口语朗读题词数（80-120）
+sample_n = 20             # 每篇织入六级词数（朗读题少于每日一篇，聚焦读音）
+max_record_sec = 60       # 前端最长录音秒数
+scorer = "openpronounce"  # 发音评测引擎：openpronounce（唯一已实现，离线音素级）
 
 [paths]
 # 相对路径以 server.py 所在目录（系统\）为基准解析（见 server.py 的 _resolve_path()）；换机/克隆后可直接运行
