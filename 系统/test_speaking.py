@@ -335,6 +335,15 @@ class NotebookTests(unittest.TestCase):
         S._word_meaning_cache = self._old_mc
         self._tmp.cleanup()
 
+    def test_load_notebook_ignores_non_dict(self):
+        """笔记本.json 是合法 JSON 但非对象（如 []）时，不应崩溃，按空笔记本处理。"""
+        p = Path(self._tmp.name) / '笔记本.json'
+        p.write_text('[]', encoding='utf-8')
+        S._nb_path = str(p)
+        nb = S._load_notebook()
+        self.assertEqual(nb, {'words': [], 'patterns': [], 'writing': []})
+        S._nb_path = str(Path(self._tmp.name) / '笔记本.json')  # 恢复 setUp 的临时路径
+
     def test_word_add_uses_wordlist_meaning(self):
         r = TestClient(S.app).post('/api/notebook/word', json={'word': 'battery', 'context': 'The battery died.'})
         self.assertEqual(r.status_code, 200, r.text)

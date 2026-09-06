@@ -75,9 +75,12 @@ def _history_index() -> list[dict]:
     if p.exists():
         try:
             data = json.loads(p.read_text(encoding='utf-8'))
-            # 结构校验：必须是 dict 列表，否则走损坏备份流程（防 {} / [null] 导致后续 KeyError/TypeError）
-            if not isinstance(data, list) or not all(isinstance(i, dict) for i in data):
-                raise ValueError('history.json 结构非法（期望 list[dict]）')
+            # 结构校验：必须是 dict 列表，且每条目含必需字段（防 {} / [null] / 缺字段导致后续 KeyError）
+            required = ('id', 'type', 'date', 'title', 'path', 'created_at')
+            if (not isinstance(data, list)
+                    or not all(isinstance(i, dict) and all(isinstance(i.get(k), str) for k in required)
+                               for i in data)):
+                raise ValueError('history.json 结构非法（期望 list[dict] 且每条目含 id/type/date/title/path/created_at）')
             return data
         except Exception:
             # 索引损坏：备份而非静默清空，避免下次保存把历史全抹掉
@@ -212,13 +215,19 @@ def _history_delete(item_id: str) -> bool:
     import shutil
     with _history_lock:
         items = _history_index()
+        history_root = _history_dir().resolve()
         new = []
         removed = False
         for i in items:
             if i['id'] == item_id:
                 removed = True
                 _delete_attached_audio(i)          # 先删关联音频目录
-                shutil.rmtree(Path(i['path']), ignore_errors=True)  # 再删归档目录
+                entry = Path(i['path']).resolve()
+                # 只允许删历史根目录之下的条目目录，防 history.json 被篡改后指向任意目录被整删
+                if entry != history_root and history_root in entry.parents:
+                    shutil.rmtree(entry, ignore_errors=True)  # 再删归档目录
+                else:
+                    print(f'[history] 拒绝删除历史目录之外的路径: {entry}', flush=True)
             else:
                 new.append(i)
         if removed:
@@ -235,6 +244,33 @@ def _history_update(item_id: str, payload: dict) -> bool:
                 cpath = Path(i['path']) / 'content.json'
                 if not cpath.exists():
                     return False
+                payload.setdefault('date', i.get('date', date.today().isoformat()))
+                payload.setdefault('title', i.get('title', ''))
+                cpath.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+                i['title'] = payload.get('title', i.get('title', ''))
+                i['date'] = payload.get('date', i.get('date'))
+                _save_history_index(items)
+                return True
+        return False
+
+
+def _history_merge(item_id: str, merge_fn) -> bool:
+    """在锁内「读旧 content → merge_fn(old, index_item) → 写回」，保证合并原子。
+
+    避免整段批改与单句批改并发时，各自无锁读到旧内容、后写者覆盖先写者，丢失字段。
+    """
+    with _history_lock:
+        items = _history_index()
+        for i in items:
+            if i['id'] == item_id:
+                cpath = Path(i['path']) / 'content.json'
+                old = {}
+                if cpath.exists():
+                    try:
+                        old = json.loads(cpath.read_text(encoding='utf-8'))
+                    except Exception:
+                        old = {}
+                payload = merge_fn(old, i)
                 payload.setdefault('date', i.get('date', date.today().isoformat()))
                 payload.setdefault('title', i.get('title', ''))
                 cpath.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -318,10 +354,16 @@ async def _lifespan(_app):
     yield
 
 
-app = FastAPI(title='CET-6 听力系统', lifespan=_lifespan)
-
-# 简单访问令牌（config [server] access_token 非空时启用）：拦截 /api/*，页面 HTML 放行
+# 简单访问令牌（config [server] access_token 非空时启用）
 _access_token = (cfg.get('server') or {}).get('access_token', '') or ''
+
+app = FastAPI(
+    title='CET-6 听力系统', lifespan=_lifespan,
+    # 开启访问令牌时关闭自动文档，避免 /docs /openapi.json 泄露完整 API schema
+    docs_url=None if _access_token else '/docs',
+    redoc_url=None if _access_token else '/redoc',
+    openapi_url=None if _access_token else '/openapi.json',
+)
 
 
 @app.middleware('http')
@@ -541,7 +583,8 @@ def new_session_dir() -> Path:
 def _prune_sessions():
     """清理空闲超时的互动 session（用户关页/刷新后不会显式 end，防止内存泄漏）。"""
     now = time.time()
-    stale = [sid for sid, s in _sessions.items()
+    # 先快照再删除，避免另一线程并发增删 _sessions 导致 "dictionary changed size during iteration"
+    stale = [sid for sid, s in list(_sessions.items())
              if now - s.get('last_active', now) > SESSION_TTL_SECONDS]
     for sid in stale:
         _sessions.pop(sid, None)
@@ -573,6 +616,16 @@ def _check_online(base_url: str, api_key: str | None = None) -> bool:
     with _cache_lock:
         _online_cache[base_url] = (now, result)
     return result
+
+
+@app.get('/api/config')
+def api_config():
+    """返回前端需要的非敏感配置（不含密钥/路径等）。"""
+    return {
+        'speaking': {
+            'max_record_sec': cfg.get('speaking', {}).get('max_record_sec', 60),
+        },
+    }
 
 
 @app.get('/api/models')
@@ -877,13 +930,20 @@ def api_trw_grade(req: TrwReq):
         raise HTTPException(502, f'批改解析失败：{e}')
     payload = {'type': req.type, 'task': task, 'answer': answer,
                'grade': result, 'status': 'graded'}
-    if hid:
-        existing = _history_content(hid)
-        if existing.get('sentence_grades'):
-            payload['sentence_grades'] = existing['sentence_grades']  # 保留单句模式的批改
     payload.setdefault('title', _trw_title(payload))
     # 有出题条目的历史 id 就原地更新（覆盖为已批改），否则（如旧客户端/测试）新归档一条
-    if not (hid and _history_update(hid, payload)):
+    if hid:
+        item = _history_get(hid)
+        if not item or item.get('type') != req.type:
+            raise HTTPException(400, '_history_id 与题目类型不匹配')
+        def _merge_whole(old, _i):
+            p = dict(payload)
+            if old.get('sentence_grades'):
+                p['sentence_grades'] = old['sentence_grades']  # 保留单句模式的批改
+            return p
+        if not _history_merge(hid, _merge_whole):
+            _archive_trw(payload)
+    else:
         _archive_trw(payload)
     return JSONResponse({'type': req.type, **result})
 
@@ -933,18 +993,20 @@ def api_trw_sentence_grade(req: SentenceGradeReq):
         item = _history_get(req.exercise_id)
         if item and item.get('type') == 'translation':
             key = str(req.index) if req.index is not None else str(len(item.get('sentence_grades') or {}))
-            payload = {
-                'type': 'translation',
-                'task': item.get('task') or {},
-                'answer': item.get('answer'),        # 保留整段模式的答案
-                'grade': item.get('grade'),          # 保留整段模式的批改
-                'sentence_grades': dict(item.get('sentence_grades') or {}),
-                'status': 'assessed',
-            }
-            payload = {k: v for k, v in payload.items() if v is not None}
-            payload['sentence_grades'][key] = {'sentence': sentence, 'answer': answer, 'grade': result}
-            payload['title'] = _trw_title(payload)
-            _history_update(req.exercise_id, payload)
+            def _merge_sentence(old, _i):
+                p = {
+                    'type': 'translation',
+                    'task': old.get('task') or item.get('task') or {},
+                    'answer': old.get('answer'),        # 保留整段模式的答案
+                    'grade': old.get('grade'),          # 保留整段模式的批改
+                    'sentence_grades': dict(old.get('sentence_grades') or {}),
+                    'status': 'assessed',
+                }
+                p = {k: v for k, v in p.items() if v is not None}
+                p['sentence_grades'][key] = {'sentence': sentence, 'answer': answer, 'grade': result}
+                p['title'] = _trw_title(p)
+                return p
+            _history_merge(req.exercise_id, _merge_sentence)
     return JSONResponse(result)
 
 
@@ -1058,25 +1120,27 @@ def api_speaking_assess(req: SpeakingAssessReq):
         except OSError:
             pass
     print(f'[speaking-assess] done idx={req.sentence_index} overall={result.get("overall")}', flush=True)
-    payload = {
-        'type': 'speaking',
-        'text': full_text,
-        'target_words': item.get('target_words', []),
-        'sentences': item.get('sentences', []),
-        'sentence_scores': dict(item.get('sentence_scores') or {}),
-        'score': item.get('score'),               # 保留整篇评分（单句评分时不丢失）
-        'audio_file': item.get('audio_file'),     # 保留整篇录音路径
-        'status': 'assessed',
-        'title': full_text[:24] or '口语朗读',
-    }
-    payload = {k: v for k, v in payload.items() if v is not None}
-    if idx is not None:
-        payload['sentence_scores'][str(idx)] = result
-    else:
-        payload['score'] = result
-        payload['audio_file'] = str(entry_dir / saved_name)
-    if not _history_update(req.exercise_id, payload):
-        _archive('speaking', payload)
+    def _build_assess_payload(old):
+        p = {
+            'type': 'speaking',
+            'text': full_text,
+            'target_words': item.get('target_words', []),
+            'sentences': item.get('sentences', []),
+            'sentence_scores': dict(old.get('sentence_scores') or {}),
+            'score': old.get('score'),               # 保留整篇评分（单句评分时不丢失）
+            'audio_file': old.get('audio_file'),     # 保留整篇录音路径
+            'status': 'assessed',
+            'title': full_text[:24] or '口语朗读',
+        }
+        p = {k: v for k, v in p.items() if v is not None}
+        if idx is not None:
+            p['sentence_scores'][str(idx)] = result
+        else:
+            p['score'] = result
+            p['audio_file'] = str(entry_dir / saved_name)
+        return p
+    if not _history_merge(req.exercise_id, lambda old, _i: _build_assess_payload(old)):
+        _archive('speaking', _build_assess_payload({}))
     return JSONResponse({'id': req.exercise_id, 'sentence_index': idx, **result})
 
 
@@ -1173,6 +1237,8 @@ def _load_notebook() -> dict:
         data = json.loads(Path(_nb_path).read_text(encoding='utf-8'))
     except Exception:
         data = {}
+    if not isinstance(data, dict):
+        data = {}  # 文件是合法 JSON 但非对象（如 [] / "str"）时，按空笔记本处理，避免启动崩溃
     nb = {}
     for k in _NB_KEYS:
         nb[k] = data.get(k) if isinstance(data.get(k), list) else []

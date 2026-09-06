@@ -172,6 +172,47 @@ class AttachedAudioTests(unittest.TestCase):
             finally:
                 self._teardown(old_hist, old_daily, old_story)
 
+    def test_delete_refuses_path_outside_history_root(self):
+        """history.json 里 path 被篡改成历史目录之外的目录时，删除不得整删该目录。"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            old = _fresh_server(tmp)
+            try:
+                victim = Path(tmp) / 'victim'
+                victim.mkdir()
+                (victim / 'x.txt').write_text('x', encoding='utf-8')
+                hid = S._archive_daily({'form': 'x', 'text': 'x'})
+                items = S._history_index()
+                for i in items:
+                    if i['id'] == hid:
+                        i['path'] = str(victim)  # 篡改 path 指向历史目录之外
+                S._save_history_index(items)
+                S._history_delete(hid)
+                self.assertTrue(victim.exists())  # 外部目录不被删
+            finally:
+                if old is None:
+                    S.cfg['paths'].pop('history_dir', None)
+                else:
+                    S.cfg['paths']['history_dir'] = old
+
+    def test_index_rejects_missing_required_fields(self):
+        """history.json 条目缺必需字段时视为损坏，重建为空而非 API 500。"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            old = _fresh_server(tmp)
+            try:
+                hj = Path(tmp) / '历史记录' / 'history.json'
+                hj.parent.mkdir(parents=True, exist_ok=True)
+                hj.write_text('[{}]', encoding='utf-8')
+                items = S._history_index()
+                self.assertEqual(items, [])
+                self.assertFalse(hj.exists())  # 原文件被备份走
+            finally:
+                if old is None:
+                    S.cfg['paths'].pop('history_dir', None)
+                else:
+                    S.cfg['paths']['history_dir'] = old
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

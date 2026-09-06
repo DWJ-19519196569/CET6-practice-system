@@ -289,6 +289,38 @@ class SentenceModeTests(unittest.TestCase):
                 else:
                     S.cfg['paths']['history_dir'] = old
 
+    def test_grade_rejects_cross_type_history_id(self):
+        """整段批改携带其它类型条目的 _history_id 必须 400，且不覆盖原条目。"""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        import server as S
+        old = S.cfg['paths'].pop('history_dir', None)
+        with tempfile.TemporaryDirectory() as tmp:
+            S.cfg['paths']['history_dir'] = str(Path(tmp) / '历史记录')
+            Path(S.cfg['paths']['history_dir']).mkdir(parents=True, exist_ok=True)
+            try:
+                hid = S._archive_daily({'form': 'x', 'text': 'x'})
+                fake = '{"reference":"r","reviews":[],"score":10,"tier":"x"}'
+                with patch.object(S.client, 'chat', return_value=fake):
+                    r = TestClient(S.app).post('/api/trw/grade',
+                                               json={'type': 'translation',
+                                                     'task': {'material': 'x', '_history_id': hid},
+                                                     'answer': 'China tea long history'})
+                self.assertEqual(r.status_code, 400)
+                content = S._history_get(hid)
+                self.assertEqual(content['type'], 'daily')  # 原条目未被覆盖
+            finally:
+                if old is None:
+                    S.cfg['paths'].pop('history_dir', None)
+                else:
+                    S.cfg['paths']['history_dir'] = old
+
+    def test_split_sentences_protects_abbreviations(self):
+        r = E.split_sentences('Dr. Smith went home. He was happy.')
+        self.assertEqual(r, ['Dr. Smith went home.', 'He was happy.'])  # 不在 Dr. 处误切，普通句号仍切
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

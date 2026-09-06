@@ -408,10 +408,21 @@ def parse_dialog_lines(text: str) -> list[tuple[str, str]]:
     return out
 
 
+_ABBREV_RE = re.compile(r'\b(Mr|Mrs|Ms|Dr|Prof|St|Jr|Sr|vs|etc|e\.g|i\.e|U\.S|U\.K|No)\.')
+
+
 def split_sentences(text: str) -> list[str]:
-    """独白文本按句切分（保持原文本完整，用于句级 srt 与前端逐句渲染）。"""
-    sents = re.split(r'(?<=[.!?])\s+', text.strip())
-    return [s for s in sents if s.strip()]
+    """独白文本按句切分（保持原文本完整，用于句级 srt 与前端逐句渲染）。
+
+    保护常见缩写（Mr. / Dr. / U.S. / e.g. 等）的句点，避免在缩写处误切。
+    """
+    text = text.strip()
+    if not text:
+        return []
+    # 缩写句点先换成控制字符占位，切句后再还原
+    protected = _ABBREV_RE.sub(lambda m: m.group(0).replace('.', '\x00'), text)
+    sents = re.split(r'(?<=[.!?])\s+', protected)
+    return [s.replace('\x00', '.') for s in sents if s.strip()]
 
 
 def build_display_units(text: str, form_key: str) -> list[dict]:

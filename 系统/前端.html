@@ -440,7 +440,13 @@ function showTokenGate() {
   document.body.appendChild(overlay);
   const apply = () => {
     const v = document.getElementById('token-input').value.trim();
-    if (v) { authToken = v; localStorage.setItem('cet6_token', v); location.reload(); }
+    if (v) {
+      authToken = v;
+      localStorage.setItem('cet6_token', v);
+      // 同时写 cookie：<audio>/new Audio() 请求不发 Authorization 头，靠 cookie 通过后端校验
+      document.cookie = 'cet6_token=' + encodeURIComponent(v) + '; path=/; max-age=' + (60 * 60 * 24 * 365) + '; SameSite=Lax';
+      location.reload();
+    }
   };
   document.getElementById('token-ok').onclick = apply;
   document.getElementById('token-input').addEventListener('keydown', e => { if (e.key === 'Enter') apply(); });
@@ -862,7 +868,7 @@ $('btn-start').onclick = () => {
 };
 
 $('btn-end').onclick = async () => {
-  if (!sessionId) return;
+  if (!sessionId || busy) return;  // 流式生成中禁止中途结束，避免旧 SSE 继续追加句子/音频
   const btn = $('btn-end');
   btn.disabled = true;
   try {
@@ -990,6 +996,13 @@ let modelState = null;
 
 async function loadModels() {
   try {
+    // 读取非敏感配置（如口语最长录音秒数）
+    try {
+      const cfg = await (await fetch('/api/config')).json();
+      if (cfg && cfg.speaking && cfg.speaking.max_record_sec) {
+        spMaxRecordSec = cfg.speaking.max_record_sec;
+      }
+    } catch (e) {}
     const r = await fetch('/api/models');
     modelState = await r.json();
     const sel = $('cloud-model-select');
@@ -1476,6 +1489,7 @@ let spStream = null, spRecorder = null, spChunks = [], spTimer = null, spSeconds
 let spRecIndex = null, spActiveAudio = null, spActiveBtn = null, spActiveOnEnd = null, spBusy = false;
 let spRecordEpoch = 0;  // 录音启动令牌：每次 spStopRecord 自增，失效在途的 getUserMedia
 let spSpeed = 1.0, spActiveWordAudio = null, spActiveWordSpan = null;
+let spMaxRecordSec = 30;  // 最长录音秒数，启动时从 /api/config 读取（默认 30）
 
 function spStatus(html) { $('sp-status').innerHTML = html; }
 function spClearStatus() { $('sp-status').innerHTML = ''; }
@@ -1755,7 +1769,7 @@ function spToggleRecord(index) {
     spStatus('<span class="rec-dot"></span>正在朗读第 ' + (index + 1) + ' 句…');
     spTimer = setInterval(() => {
       spSeconds++;
-      if (spSeconds >= 30) spRecorder.stop();
+      if (spSeconds >= spMaxRecordSec) spRecorder.stop();
     }, 1000);
   }).catch(() => spStatus('无法访问麦克风：请允许权限并确认已连接麦克风'));
 }
