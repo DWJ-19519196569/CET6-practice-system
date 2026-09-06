@@ -1,7 +1,10 @@
 # config.toml — CET-6 听力系统配置
 
 [server]
+host = "0.0.0.0"        # 局域网可访问（手机浏览器）。改回 127.0.0.1 则仅本机
 port = 8123
+https = true             # 启用 HTTPS（自签名证书，供手机麦克风等安全上下文需求）
+access_token = ""        # 访问令牌；非空则局域网访问需输入（留空 = 不认证）
 
 [llm]
 # 生成模型：cloud = 云端 DeepSeek（本地 Qwen 已停用，显存留给 TTS/评分模型）

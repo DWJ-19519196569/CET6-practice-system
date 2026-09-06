@@ -2,15 +2,13 @@
 title CET-6 Practice
 echo ============================================
 echo   CET-6 Practice System - Starting
-echo   Generation model: DeepSeek cloud
-echo   TTS + pronunciation models preload to GPU
 echo ============================================
 echo.
 
 cd /d "%~dp0"
 
 echo [1/2] Checking server status...
-curl -s --max-time 2 http://127.0.0.1:8123/ >nul 2>&1
+curl -sk --max-time 2 https://127.0.0.1:8123/ >nul 2>&1
 if errorlevel 1 (
     echo Server not running, starting a new one...
     start "CET6-server" /min python server.py
@@ -19,27 +17,27 @@ if errorlevel 1 (
 )
 
 echo [2/2] Waiting for server ready...
-set ready=0
 for /l %%i in (1,1,20) do (
-    curl -s --max-time 2 http://127.0.0.1:8123/ >nul 2>&1
-    if not errorlevel 1 (
-        set ready=1
-        goto :open
-    )
+    curl -sk --max-time 2 https://127.0.0.1:8123/ >nul 2>&1
+    if not errorlevel 1 goto :open
     timeout /t 1 /nobreak >nul
 )
+echo [FAILED] Server start timeout. Check python environment.
+pause
+exit /b 1
+
 :open
-if "%ready%"=="1" (
-    echo Server ready, opening browser...
-    echo Note: TTS + scoring models are preloading to GPU in background - about 1 min.
-    start http://127.0.0.1:8123
-) else (
-    echo [FAILED] Server start timeout. Check python environment.
-    pause
-    exit /b 1
-)
+echo Server ready.
+echo Note: TTS + scoring models preloading to GPU in background - about 1 min.
+echo.
+echo ============================================
+echo   Phone access - same WiFi network:
+python -c "import socket; [print('    https://'+ip+':8123') for ip in socket.gethostbyname_ex(socket.gethostname())[2] if ip!='127.0.0.1']"
+echo   First phone visit: tap Advanced / Proceed to trust the certificate.
+echo ============================================
+start https://127.0.0.1:8123
 echo.
 echo Server is running in a minimized window.
-echo Stop: kill the python process in Task Manager.
+echo Stop: Task Manager - end the python process.
 echo.
 pause

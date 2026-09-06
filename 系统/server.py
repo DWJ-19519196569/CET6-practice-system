@@ -320,6 +320,20 @@ async def _lifespan(_app):
 
 app = FastAPI(title='CET-6 听力系统', lifespan=_lifespan)
 
+# 简单访问令牌（config [server] access_token 非空时启用）：拦截 /api/*，页面 HTML 放行
+_access_token = (cfg.get('server') or {}).get('access_token', '') or ''
+
+
+@app.middleware('http')
+async def _auth_middleware(request, call_next):
+    if _access_token and request.url.path.startswith('/api'):
+        tok = (request.headers.get('authorization') or '').removeprefix('Bearer ').strip()
+        if not tok:
+            tok = request.cookies.get('cet6_token', '')
+        if tok != _access_token:
+            return JSONResponse({'detail': '需要访问令牌'}, status_code=401)
+    return await call_next(request)
+
 
 def get_tts() -> TTSEngine:
     global _tts
@@ -1346,9 +1360,86 @@ def index():
     return FileResponse(os.path.join(sys_dir, '前端.html'), headers={'Cache-Control': 'no-store'})
 
 
+def _ensure_self_signed_cert(cert_dir: Path):
+    """确保存在自签名证书（HTTPS 供手机麦克风等安全上下文需求）；缺失则用 cryptography 生成。"""
+    cert_path = cert_dir / 'cert.pem'
+    key_path = cert_dir / 'key.pem'
+    if cert_path.exists() and key_path.exists():
+        return str(cert_path), str(key_path)
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        import datetime
+        import ipaddress
+        import socket
+    except ImportError:
+        print('[https] 未安装 cryptography，无法自动生成证书，回退为 HTTP', flush=True)
+        return None, None
+    cert_dir.mkdir(parents=True, exist_ok=True)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'CET6-local')])
+    # SAN 覆盖本机所有局域网 IP + localhost，减少手机"证书不匹配"警告
+    sans = [x509.IPAddress(ipaddress.ip_address('127.0.0.1')),
+            x509.DNSName('localhost')]
+    try:
+        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            if ip not in ('127.0.0.1',):
+                sans.append(x509.IPAddress(ipaddress.ip_address(ip)))
+    except Exception:
+        pass
+    cert = (x509.CertificateBuilder()
+            .subject_name(name).issuer_name(name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1))
+            .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3650))
+            .add_extension(x509.SubjectAlternativeName(sans), critical=False)
+            .sign(key, hashes.SHA256()))
+    key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM,
+                                           serialization.PrivateFormat.TraditionalOpenSSL,
+                                           serialization.NoEncryption()))
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    print(f'[https] 已生成自签名证书：{cert_path}', flush=True)
+    return str(cert_path), str(key_path)
+
+
+def _lan_ips() -> list[str]:
+    import socket
+    try:
+        return [ip for ip in socket.gethostbyname_ex(socket.gethostname())[2] if ip != '127.0.0.1']
+    except Exception:
+        return []
+
+
+def _print_access_info(port: int, https: bool):
+    scheme = 'https' if https else 'http'
+    print('=' * 56, flush=True)
+    print('CET-6 服务已启动，同一局域网内手机/平板浏览器可访问：', flush=True)
+    for ip in _lan_ips():
+        print(f'    {scheme}://{ip}:{port}', flush=True)
+    print(f'    本机: {scheme}://127.0.0.1:{port}', flush=True)
+    if https:
+        print('首次用手机访问会提示证书不受信任：请选择「继续访问/信任」即可', flush=True)
+    if _access_token:
+        print(f'已启用访问令牌（请输入 config.toml 里设置的 access_token）', flush=True)
+    print('=' * 56, flush=True)
+
+
 def main():
     import uvicorn
-    uvicorn.run(app, host='127.0.0.1', port=cfg['server']['port'], log_level='info')
+    host = (cfg.get('server') or {}).get('host', '0.0.0.0')
+    port = cfg['server']['port']
+    https = bool((cfg.get('server') or {}).get('https', False))
+    cert_path = key_path = None
+    if https:
+        cert_path, key_path = _ensure_self_signed_cert(Path(sys_dir) / 'certs')
+        if not cert_path:
+            https = False
+    _print_access_info(port, https)
+    uvicorn.run(app, host=host, port=port,
+                ssl_certfile=cert_path, ssl_keyfile=key_path, log_level='info')
 
 
 if __name__ == '__main__':

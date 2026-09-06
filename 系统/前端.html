@@ -222,6 +222,33 @@
   .wr-para { display: flex; align-items: flex-start; gap: 8px; }
   .wr-para > span { flex: 1; }
   .wr-collect { flex: none; }
+  /* ---------- 移动端适配 ---------- */
+  @media (max-width: 768px) {
+    body { font-size: 16px; }  /* 避免 iOS 输入时自动放大 */
+    .wrap { padding: 12px 12px calc(90px + env(safe-area-inset-bottom)); }
+    h1 { font-size: 16px; }
+    .tabs {
+      overflow-x: auto; overflow-y: hidden; white-space: nowrap; flex-wrap: nowrap;
+      -webkit-overflow-scrolling: touch; padding-bottom: 4px;
+    }
+    .tab { flex: none; white-space: nowrap; padding: 10px 13px; font-size: 15px; }
+    .btn { padding: 11px 18px; font-size: 15px; min-height: 44px; }
+    .btn.small { padding: 7px 13px; min-height: 36px; }
+    .translate-btn { padding: 5px 10px; font-size: 12px; min-height: 32px; }
+    .opt-btn { padding: 12px 14px; min-height: 44px; }
+    #d-input, .key-input, .tr-sent-input,
+    #wr-answer textarea, #tr-answer textarea, .nb-edit-input { font-size: 16px; }
+    .sp-sent-text { min-width: 0; }
+    .sp-sent-head { align-items: flex-start; }
+    .model-bar { flex-direction: column; align-items: stretch; }
+    .model-select, .key-input { max-width: none; width: 100%; }
+    .trw-btns { flex-wrap: wrap; }
+    .grade-score { font-size: 18px; }
+    .word-bubble { max-width: 76vw; }
+    .hist-drawer { max-height: 82vh; margin-top: 6vh; }
+    .st-word, .sp-word { padding: 2px 3px; }  /* 加大点按热区 */
+    .st-word:active, .sp-word:active { background: rgba(110,163,192,.25); }
+  }
 </style>
 </head>
 <body>
@@ -376,6 +403,61 @@ async function llmFetch(url, body, timeoutMs = 420000) {
     clearTimeout(timer);
   }
 }
+
+// ---------- 访问令牌（config [server] access_token 非空时后端要求） ----------
+let authToken = localStorage.getItem('cet6_token') || '';
+const _origFetch = window.fetch.bind(window);
+window.fetch = function (url, opts) {
+  opts = opts || {};
+  if (authToken) {
+    const h = new Headers(opts.headers || {});
+    if (!h.has('Authorization')) h.set('Authorization', 'Bearer ' + authToken);
+    opts.headers = h;
+  }
+  return _origFetch(url, opts).then(r => {
+    if (r.status === 401 && !window.__tokenGateShown) {
+      window.__tokenGateShown = true;
+      showTokenGate();
+    }
+    return r;
+  });
+};
+
+function showTokenGate() {
+  if (document.getElementById('token-gate')) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'token-gate';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.62);display:flex;align-items:center;justify-content:center;z-index:999;';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:20px;width:min(360px,90vw);';
+  box.innerHTML = '<h3 style="margin-bottom:8px">需要访问令牌</h3>' +
+    '<p style="font-size:13px;color:var(--muted);margin-bottom:12px">本服务已开启访问控制，请输入 config.toml 里设置的 access_token。</p>' +
+    '<input id="token-input" type="password" placeholder="访问令牌" style="width:100%;background:var(--panel);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:4px;margin-bottom:12px;font-size:15px;outline:none">' +
+    '<div style="display:flex;gap:8px;justify-content:flex-end">' +
+    '<button id="token-cancel" class="btn small ghost">取消</button>' +
+    '<button id="token-ok" class="btn small">确认</button></div>';
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  const apply = () => {
+    const v = document.getElementById('token-input').value.trim();
+    if (v) { authToken = v; localStorage.setItem('cet6_token', v); location.reload(); }
+  };
+  document.getElementById('token-ok').onclick = apply;
+  document.getElementById('token-input').addEventListener('keydown', e => { if (e.key === 'Enter') apply(); });
+  document.getElementById('token-cancel').onclick = () => { overlay.remove(); window.__tokenGateShown = false; };
+}
+
+// ---------- 移动端自动播放解锁（首次触摸/点击时播一次静音，之后故事自动朗读不被拦截） ----------
+function unlockAudio() {
+  try {
+    const a = new Audio('data:audio/wav;base64,UklGRoQJAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YWAJAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
+    a.play().catch(() => {});
+  } catch (e) {}
+  document.removeEventListener('touchstart', unlockAudio);
+  document.removeEventListener('click', unlockAudio);
+}
+document.addEventListener('touchstart', unlockAudio, { passive: true });
+document.addEventListener('click', unlockAudio);
 
 // ---------- SSE 工具 ----------
 function parseSSEBlock(block) {
@@ -1635,6 +1717,15 @@ function spRenderSentences() {
   (spSentences || []).forEach(s => box.appendChild(spMakeSentenceRow(s)));
 }
 
+// 选择浏览器支持的录音格式（iOS Safari 用 mp4，其余优先 webm/opus）
+function spPickMime() {
+  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
+  for (const m of ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']) {
+    try { if (MediaRecorder.isTypeSupported(m)) return m; } catch (e) {}
+  }
+  return '';
+}
+
 function spToggleRecord(index) {
   if (spBusy) { spStatus('正在评分，请稍候…'); return; }
   if (spRecIndex === index && spRecorder && spRecorder.state === 'recording') {
@@ -1652,7 +1743,8 @@ function spToggleRecord(index) {
   navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
     if (spBusy || epoch !== spRecordEpoch) { stream.getTracks().forEach(t => t.stop()); return; }  // 兜底：评分期间/新一次录音已开始则不录音
     spStream = stream;
-    spRecorder = new MediaRecorder(stream);
+    const mime = spPickMime();
+    spRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
     spChunks = [];
     spRecorder.ondataavailable = e => { if (e.data && e.data.size) spChunks.push(e.data); };
     spRecorder.onstop = () => spOnRecordStop(index);
