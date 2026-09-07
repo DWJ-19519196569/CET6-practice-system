@@ -468,9 +468,10 @@ document.addEventListener('click', unlockAudio);
 // ---------- SSE 工具 ----------
 function parseSSEBlock(block) {
   let event = 'message', dataLines = [];
-  for (const line of block.split('\n')) {
-    if (line.startsWith('event: ')) event = line.slice(7).trim();
-    else if (line.startsWith('data: ')) dataLines.push(line.slice(6));
+  for (const line of block.split(/\r?\n/)) {
+    const l = line.endsWith('\r') ? line.slice(0, -1) : line;
+    if (l.startsWith('event: ')) event = l.slice(7).trim();
+    else if (l.startsWith('data: ')) dataLines.push(l.slice(6));
   }
   try { return { event, data: JSON.parse(dataLines.join('\n')) }; }
   catch { return { event, data: {} }; }
@@ -504,9 +505,9 @@ async function streamSSE(url, body, onEvent, timeoutMs = 600000) {
         if (done) break;
         buf += dec.decode(value, { stream: true });
         let idx;
-        while ((idx = buf.indexOf('\n\n')) !== -1) {
+        while ((idx = buf.search(/\r?\n\r?\n/)) !== -1) {
           const block = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
+          buf = buf.slice(idx + (buf.slice(idx, idx + 4).startsWith('\r\n\r\n') ? 4 : 2));
           if (block.trim()) onEvent(parseSSEBlock(block).event, parseSSEBlock(block).data);
         }
       }

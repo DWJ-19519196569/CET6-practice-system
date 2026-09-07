@@ -54,10 +54,14 @@ def _validate_config(cfg):
     server = section('server')
     need('server', server, 'port', int)
     need('server', server, 'host', str)
+    if not isinstance(server.get('access_token', ''), str):
+        raise SystemExit('config.toml [server] access_token 类型必须为字符串')
     llm = section('llm')
     need('llm', llm, 'active', str)
-    need('llm', llm, 'local', dict)
-    need('llm', llm, 'cloud', dict)
+    for profile in ('local', 'cloud'):
+        p = need('llm', llm, profile, dict)
+        need(f'llm.{profile}', p, 'base_url', str)
+        need(f'llm.{profile}', p, 'model', str)
     gen = need('llm', llm, 'generation', dict)
     need('llm.generation', gen, 'temperature', int, float)
     need('llm.generation', gen, 'max_tokens', int)
@@ -623,6 +627,10 @@ def story_stream_factory(session: dict, prompt: str, choice: str | None = None):
                                            'word_timeline': [{'start': round(w[1], 3), 'dur': round(w[2] - w[1], 3)} for w in words]})
                     idx += 1
             result = parser.finish()
+            # 空段落兜底：LLM 偶发空正文时不归档、不展示默认选项，直接报错让前端解除 busy
+            if not (result.get('segment') or '').strip():
+                yield sse('error', {'message': 'LLM 返回空故事段落，请重试'})
+                return
             # 尾句兜底（段末无空白的半句，parser.finish 已 flush 到 sents 但没合成过）
             flushed = [s for s in parser.sents if s not in [x[0] for x in seg_sents]]
             for sent in flushed:
@@ -1166,10 +1174,15 @@ def api_speaking_generate():
     })
     entry_dir = _history_dir() / 'speaking' / hid
     import soundfile as sf
-    for i, a in enumerate(sent_audio):
-        wav = entry_dir / f'ref_{i}.wav'
-        sf.write(wav, a, 24000)
-        to_mp3(str(wav), str(entry_dir / f'ref_{i}.mp3'))
+    try:
+        for i, a in enumerate(sent_audio):
+            wav = entry_dir / f'ref_{i}.wav'
+            sf.write(wav, a, 24000)
+            to_mp3(str(wav), str(entry_dir / f'ref_{i}.mp3'))
+    except Exception:
+        # 写范本音频失败：回滚该归档条目，避免留下"无音频"的 speaking 历史
+        _history_delete(hid)
+        raise
     return JSONResponse({
         'id': hid,
         'text': raw,
@@ -1285,10 +1298,15 @@ def api_speaking_audio(id: str, kind: str = 'user', i: int | None = None):
     else:
         fname = f'user_{i}.mp3' if i is not None else 'user.mp3'
     p = Path(item['path']) / fname
+    # 安全：最终文件解析后必须仍在条目目录之内（防目录内 junction/symlink 指向外部文件）
+    entry_root = Path(item['path']).resolve()
+    p = p.resolve()
+    if entry_root not in p.parents:
+        raise HTTPException(404, 'audio not found')
     if not p.exists():
         # to_mp3 失败时回退到已保留的 WAV（口语回放不能因 ffmpeg 失败而 404）
-        p_wav = Path(item['path']) / (fname[:-4] + '.wav')
-        if p_wav.exists():
+        p_wav = (Path(item['path']) / (fname[:-4] + '.wav')).resolve()
+        if entry_root in p_wav.parents and p_wav.exists():
             return FileResponse(p_wav, media_type='audio/wav', headers={'Cache-Control': 'no-store'})
         raise HTTPException(404, 'audio not found')
     # no-store：同句重新评分会覆盖同名录音文件，禁止浏览器缓存旧录音

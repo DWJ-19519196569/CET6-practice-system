@@ -149,6 +149,19 @@ class ConfigValidationTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             S._validate_config(bad)
 
+    def test_validate_rejects_missing_llm_subkey(self):
+        bad = {k: (dict(v) if isinstance(v, dict) else v) for k, v in S.cfg.items()}
+        bad['llm'] = dict(bad['llm']); bad['llm']['cloud'] = dict(bad['llm']['cloud'])
+        bad['llm']['cloud'].pop('base_url', None)
+        with self.assertRaises(SystemExit):
+            S._validate_config(bad)
+
+    def test_validate_rejects_non_str_access_token(self):
+        bad = {k: (dict(v) if isinstance(v, dict) else v) for k, v in S.cfg.items()}
+        bad['server'] = dict(bad['server']); bad['server']['access_token'] = 123
+        with self.assertRaises(SystemExit):
+            S._validate_config(bad)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
