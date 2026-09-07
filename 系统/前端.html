@@ -238,7 +238,7 @@
     .opt-btn { padding: 12px 14px; min-height: 44px; }
     #d-input, .key-input, .tr-sent-input,
     #wr-answer textarea, #tr-answer textarea, .nb-edit-input { font-size: 16px; }
-    .sp-sent-text { min-width: 0; }
+    .sp-sent-text { flex: 1 1 100%; min-width: 0; }
     .sp-sent-head { align-items: flex-start; }
     .model-bar { flex-direction: column; align-items: stretch; }
     .model-select, .key-input { max-width: none; width: 100%; }
@@ -700,7 +700,10 @@ function wbShowBubble(anchor, word, context, source) {
 function wbReposition() {
   if (wbBubbleEl && wbAnchor) {
     const r = wbAnchor.getBoundingClientRect();
-    wbBubbleEl.style.left = Math.min(r.left, window.innerWidth - 220) + 'px';
+    // 夹在视口内：手机上点右侧单词时气泡不超出屏幕右边缘
+    const bw = wbBubbleEl.offsetWidth || 220;
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - bw - 8));
+    wbBubbleEl.style.left = left + 'px';
     wbBubbleEl.style.top = (r.bottom + 4) + 'px';
   }
 }
