@@ -1667,18 +1667,58 @@ def _lan_ips() -> list[str]:
     return [ip for ip in ips if ip != '127.0.0.1' and not ip.startswith('169.254.')]
 
 
+def _adapter_ips() -> list:
+    """返回 [(适配器名, ipv4)]，用于区分物理网卡与蒲公英等虚拟网卡。失败返回 []。"""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ['powershell', '-NoProfile', '-Command',
+             "Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object { "
+             "$n = $_.Name; Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4 "
+             "-ErrorAction SilentlyContinue | ForEach-Object { $_.IPAddress + '=' + $n } }"],
+            capture_output=True, text=True, timeout=15)
+        pairs = []
+        for line in (out.stdout or '').splitlines():
+            line = line.strip()
+            if '=' in line:
+                ip, name = line.split('=', 1)
+                pairs.append((name.strip(), ip.strip()))
+        return pairs
+    except Exception:
+        return []
+
+
 def _print_access_info(port: int, https: bool):
     scheme = 'https' if https else 'http'
+    lines = []
+    pairs = _adapter_ips()
+    if pairs:
+        for name, ip in pairs:
+            if ip == '127.0.0.1' or ip.startswith('169.254.'):
+                continue
+            low = name.lower()
+            label = '蒲公英跨网络' if ('oray' in low or 'pgy' in low or 'peanuthull' in low) else '局域网'
+            lines.append(f'    [{label}] {scheme}://{ip}:{port}')
+    else:
+        for ip in _lan_ips():
+            lines.append(f'    [局域网] {scheme}://{ip}:{port}')
+    lines.append(f'    [本机] {scheme}://127.0.0.1:{port}')
     print('=' * 56, flush=True)
-    print('CET-6 服务已启动，同一局域网内手机/平板浏览器可访问：', flush=True)
-    for ip in _lan_ips():
-        print(f'    {scheme}://{ip}:{port}', flush=True)
-    print(f'    本机: {scheme}://127.0.0.1:{port}', flush=True)
+    print('CET-6 服务已启动，手机/平板浏览器可访问：', flush=True)
+    for ln in lines:
+        print(ln, flush=True)
     if https:
         print('首次用手机访问会提示证书不受信任：请选择「继续访问/信任」即可', flush=True)
     if _access_token:
         print(f'已启用访问令牌（请输入 config.toml 里设置的 access_token）', flush=True)
     print('=' * 56, flush=True)
+    # 写一份访问地址文件，供启动.bat 启动后展示（IP 变化时每次启动都是最新的）
+    # 文件名用 ASCII（bat 按 GBK 解析，中文文件名会乱码）；内容用 GBK 保证 type/记事本不乱码
+    try:
+        body = 'CET-6 访问地址（每次启动自动更新）\n' + '\n'.join(lines) + '\n'
+        (Path(sys_dir) / 'access_urls.txt').write_text(body, encoding='gbk', errors='replace')
+    except Exception:
+        pass
 
 
 def main():

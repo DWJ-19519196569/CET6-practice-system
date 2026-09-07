@@ -31,8 +31,11 @@ echo Server ready.
 echo Note: TTS + scoring models preloading to GPU in background - about 1 min.
 echo.
 echo ============================================
-echo   Phone access - same WiFi network:
-python -c "import socket; [print('    https://'+ip+':8123') for ip in socket.gethostbyname_ex(socket.gethostname())[2] if ip!='127.0.0.1']"
+if exist "access_urls.txt" (
+    type "access_urls.txt"
+) else (
+    echo     [local] https://127.0.0.1:8123
+)
 echo   First phone visit: tap Advanced / Proceed to trust the certificate.
 echo ============================================
 start https://127.0.0.1:8123
