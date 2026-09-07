@@ -81,6 +81,12 @@ def _history_index() -> list[dict]:
                     or not all(isinstance(i, dict) and all(isinstance(i.get(k), str) for k in required)
                                for i in data)):
                 raise ValueError('history.json 结构非法（期望 list[dict] 且每条目含 id/type/date/title/path/created_at）')
+            # path 必须位于历史根目录之内，统一防「读/删/取音频文件」越界
+            history_root = _history_dir().resolve()
+            for i in data:
+                entry = Path(i['path']).resolve()
+                if entry == history_root or history_root not in entry.parents:
+                    raise ValueError('history.json 条目 path 不在历史目录内')
             return data
         except Exception:
             # 索引损坏：备份而非静默清空，避免下次保存把历史全抹掉
@@ -137,6 +143,8 @@ def _history_get(item_id: str):
                     content = json.loads(cpath.read_text(encoding='utf-8'))
                 except Exception:
                     content = {}
+                if not isinstance(content, dict):
+                    content = {}
                 # 索引字段（id/path/created_at/type/date/title）优先，防 content 里的同名键覆盖
                 return {**content, **i}
     return None
@@ -149,9 +157,10 @@ def _history_content(item_id: str) -> dict:
             cpath = Path(i['path']) / 'content.json'
             if cpath.exists():
                 try:
-                    return json.loads(cpath.read_text(encoding='utf-8'))
+                    content = json.loads(cpath.read_text(encoding='utf-8'))
                 except Exception:
                     return {}
+                return content if isinstance(content, dict) else {}
     return {}
 
 
@@ -270,6 +279,8 @@ def _history_merge(item_id: str, merge_fn) -> bool:
                         old = json.loads(cpath.read_text(encoding='utf-8'))
                     except Exception:
                         old = {}
+                    if not isinstance(old, dict):
+                        old = {}
                 payload = merge_fn(old, i)
                 payload.setdefault('date', i.get('date', date.today().isoformat()))
                 payload.setdefault('title', i.get('title', ''))
@@ -371,7 +382,11 @@ async def _auth_middleware(request, call_next):
     if _access_token and request.url.path.startswith('/api'):
         tok = (request.headers.get('authorization') or '').removeprefix('Bearer ').strip()
         if not tok:
-            tok = request.cookies.get('cet6_token', '')
+            # cookie 值前端用 encodeURIComponent 编码过，先 URL 解码再比较（兼容未编码值）
+            from urllib.parse import unquote
+            tok = (request.cookies.get('cet6_token') or '').strip()
+            if tok and tok != _access_token:
+                tok = unquote(tok)
         if tok != _access_token:
             return JSONResponse({'detail': '需要访问令牌'}, status_code=401)
     return await call_next(request)
@@ -992,14 +1007,16 @@ def api_trw_sentence_grade(req: SentenceGradeReq):
     if req.exercise_id:
         item = _history_get(req.exercise_id)
         if item and item.get('type') == 'translation':
-            key = str(req.index) if req.index is not None else str(len(item.get('sentence_grades') or {}))
             def _merge_sentence(old, _i):
+                # key 在锁内根据最新 old 计算，避免 index=None 并发时两个请求都算得相同 key
+                old_sgs = dict(old.get('sentence_grades') or {})
+                key = str(req.index) if req.index is not None else str(len(old_sgs))
                 p = {
                     'type': 'translation',
                     'task': old.get('task') or item.get('task') or {},
                     'answer': old.get('answer'),        # 保留整段模式的答案
                     'grade': old.get('grade'),          # 保留整段模式的批改
-                    'sentence_grades': dict(old.get('sentence_grades') or {}),
+                    'sentence_grades': old_sgs,
                     'status': 'assessed',
                 }
                 p = {k: v for k, v in p.items() if v is not None}
@@ -1097,6 +1114,8 @@ def api_speaking_assess(req: SpeakingAssessReq):
         raise HTTPException(500, f'音频转码失败：{e}')
     entry_dir = Path(item['path'])
     idx = req.sentence_index
+    if idx is not None and idx < 0:
+        raise HTTPException(400, 'sentence_index 不能为负')
     user_name = f'user_{idx}.mp3' if idx is not None else 'user.mp3'
     saved_name = user_name
     try:
@@ -1150,6 +1169,8 @@ def api_speaking_audio(id: str, kind: str = 'user', i: int | None = None):
     item = _history_get(id)
     if not item or item.get('type') != 'speaking':
         raise HTTPException(404, 'not found')
+    if i is not None and i < 0:
+        raise HTTPException(400, 'i 不能为负')
     if kind == 'ref':
         if i is None:
             # 范本只按句生成 ref_0.mp3 / ref_1.mp3...，从不生成整篇 ref.mp3
@@ -1427,11 +1448,24 @@ def index():
 
 
 def _ensure_self_signed_cert(cert_dir: Path):
-    """确保存在自签名证书（HTTPS 供手机麦克风等安全上下文需求）；缺失则用 cryptography 生成。"""
+    """确保存在自签名证书（HTTPS 供手机麦克风等安全上下文需求）。
+
+    缺失时用 cryptography 生成；本机 IP 变化导致 SAN 未覆盖时自动重签。
+    覆盖范围记录在 sidecar ips.json，启动时对比当前局域网 IP。
+    """
     cert_path = cert_dir / 'cert.pem'
     key_path = cert_dir / 'key.pem'
-    if cert_path.exists() and key_path.exists():
-        return str(cert_path), str(key_path)
+    sidecar = cert_dir / 'ips.json'
+    cur_ips = ['127.0.0.1'] + _lan_ips()
+    covered = []
+    if sidecar.exists():
+        try:
+            covered = json.loads(sidecar.read_text(encoding='utf-8'))
+        except Exception:
+            covered = []
+    if (cert_path.exists() and key_path.exists()
+            and isinstance(covered, list) and all(ip in covered for ip in cur_ips)):
+        return str(cert_path), str(key_path)  # 证书已覆盖当前所有 IP，无需重签
     try:
         from cryptography import x509
         from cryptography.x509.oid import NameOID
@@ -1439,7 +1473,6 @@ def _ensure_self_signed_cert(cert_dir: Path):
         from cryptography.hazmat.primitives.asymmetric import rsa
         import datetime
         import ipaddress
-        import socket
     except ImportError:
         print('[https] 未安装 cryptography，无法自动生成证书，回退为 HTTP', flush=True)
         return None, None
@@ -1447,14 +1480,8 @@ def _ensure_self_signed_cert(cert_dir: Path):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'CET6-local')])
     # SAN 覆盖本机所有局域网 IP + localhost，减少手机"证书不匹配"警告
-    sans = [x509.IPAddress(ipaddress.ip_address('127.0.0.1')),
-            x509.DNSName('localhost')]
-    try:
-        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
-            if ip not in ('127.0.0.1',):
-                sans.append(x509.IPAddress(ipaddress.ip_address(ip)))
-    except Exception:
-        pass
+    sans = [x509.IPAddress(ipaddress.ip_address(ip)) for ip in cur_ips]
+    sans.append(x509.DNSName('localhost'))
     cert = (x509.CertificateBuilder()
             .subject_name(name).issuer_name(name)
             .public_key(key.public_key())
@@ -1467,6 +1494,7 @@ def _ensure_self_signed_cert(cert_dir: Path):
                                            serialization.PrivateFormat.TraditionalOpenSSL,
                                            serialization.NoEncryption()))
     cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    sidecar.write_text(json.dumps(cur_ips, ensure_ascii=False), encoding='utf-8')
     print(f'[https] 已生成自签名证书：{cert_path}', flush=True)
     return str(cert_path), str(key_path)
 

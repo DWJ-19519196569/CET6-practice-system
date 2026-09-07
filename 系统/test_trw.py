@@ -320,6 +320,8 @@ class SentenceModeTests(unittest.TestCase):
     def test_split_sentences_protects_abbreviations(self):
         r = E.split_sentences('Dr. Smith went home. He was happy.')
         self.assertEqual(r, ['Dr. Smith went home.', 'He was happy.'])  # 不在 Dr. 处误切，普通句号仍切
+        r2 = E.split_sentences('He lives in the U.S. He is happy.')
+        self.assertEqual(r2, ['He lives in the U.S.', 'He is happy.'])  # 句末 U.S. 仍要切句
 
 
 if __name__ == '__main__':

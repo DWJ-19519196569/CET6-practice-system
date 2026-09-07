@@ -213,6 +213,47 @@ class AttachedAudioTests(unittest.TestCase):
                 else:
                     S.cfg['paths']['history_dir'] = old
 
+    def test_index_rejects_path_outside_root(self):
+        """history.json 条目 path 指向历史目录之外时视为损坏（防读侧越界泄露）。"""
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            old = _fresh_server(tmp)
+            try:
+                hj = Path(tmp) / '历史记录' / 'history.json'
+                hj.parent.mkdir(parents=True, exist_ok=True)
+                outside = Path(tmp) / 'outside'
+                outside.mkdir()
+                (outside / 'content.json').write_text('{"secret":1}', encoding='utf-8')
+                entry = {'id': 'badid', 'type': 'daily', 'date': 'x', 'title': 'x',
+                         'path': str(outside), 'created_at': 'x'}
+                hj.write_text(json.dumps([entry], ensure_ascii=False), encoding='utf-8')
+                items = S._history_index()
+                self.assertEqual(items, [])  # 视为损坏，重建为空
+                self.assertFalse(hj.exists())  # 原文件被备份走
+            finally:
+                if old is None:
+                    S.cfg['paths'].pop('history_dir', None)
+                else:
+                    S.cfg['paths']['history_dir'] = old
+
+    def test_get_handles_non_dict_content(self):
+        """content.json 是合法 JSON 但非对象（[]）时，读接口不崩、按 {} 处理。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            old = _fresh_server(tmp)
+            try:
+                hid = S._archive('daily', {'text': 'x'})
+                cpath = Path(S._history_get(hid)['path']) / 'content.json'
+                cpath.write_text('[]', encoding='utf-8')
+                item = S._history_get(hid)
+                self.assertIsInstance(item, dict)
+                self.assertEqual(item['type'], 'daily')
+                self.assertEqual(S._history_content(hid), {})
+            finally:
+                if old is None:
+                    S.cfg['paths'].pop('history_dir', None)
+                else:
+                    S.cfg['paths']['history_dir'] = old
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

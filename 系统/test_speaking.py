@@ -262,6 +262,21 @@ class WordTtsTests(unittest.TestCase):
         r = TestClient(S.app).get('/api/tts/word', params={'text': '你好'})
         self.assertEqual(r.status_code, 400)
 
+    def test_auth_cookie_url_decoded(self):
+        """token 含特殊字符时，前端 encodeURIComponent 的 cookie 后端应 URL 解码后匹配。"""
+        old = S._access_token
+        S._access_token = 'a@b'
+        try:
+            with patch.object(S, 'get_tts', return_value=FakeTTS()):
+                r_ok = TestClient(S.app).get('/api/tts/word', params={'text': 'hello'},
+                                             cookies={'cet6_token': 'a%40b'})
+                r_bad = TestClient(S.app).get('/api/tts/word', params={'text': 'hello'},
+                                              cookies={'cet6_token': 'wrong'})
+            self.assertEqual(r_ok.status_code, 200)   # URL 编码 cookie 解码后匹配
+            self.assertEqual(r_bad.status_code, 401)
+        finally:
+            S._access_token = old
+
     def test_daily_returns_timeline_matching_units(self):
         old_daily = S.cfg['paths']['daily_dir']
         old_hist = S.cfg['paths'].pop('history_dir', None)

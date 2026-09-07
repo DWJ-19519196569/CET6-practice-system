@@ -414,13 +414,20 @@ _ABBREV_RE = re.compile(r'\b(Mr|Mrs|Ms|Dr|Prof|St|Jr|Sr|vs|etc|e\.g|i\.e|U\.S|U\
 def split_sentences(text: str) -> list[str]:
     """独白文本按句切分（保持原文本完整，用于句级 srt 与前端逐句渲染）。
 
-    保护常见缩写（Mr. / Dr. / U.S. / e.g. 等）的句点，避免在缩写处误切。
+    保护常见缩写（Mr. / Dr. / U.S. / e.g. 等）的句点，避免在缩写处误切；
+    多句点缩写位于句末且后接新句时，保留最后一个句点作切分点。
     """
     text = text.strip()
     if not text:
         return []
+    def _protect(m):
+        ab = m.group(0)
+        # 多句点缩写（如 U.S.）后接「空格+大写」时，最后一个点是句末句点，保留它以便切句
+        if ab.count('.') >= 2 and re.match(r'\s+[A-Z]', text[m.end():]):
+            return ab[:-1].replace('.', '\x00') + '.'
+        return ab.replace('.', '\x00')
     # 缩写句点先换成控制字符占位，切句后再还原
-    protected = _ABBREV_RE.sub(lambda m: m.group(0).replace('.', '\x00'), text)
+    protected = _ABBREV_RE.sub(_protect, text)
     sents = re.split(r'(?<=[.!?])\s+', protected)
     return [s.replace('\x00', '.') for s in sents if s.strip()]
 
@@ -526,9 +533,11 @@ def load_state(path: str) -> dict:
     if p.exists():
         try:
             data = json.loads(p.read_text(encoding='utf-8'))
-            # 结构校验：必须是含非空 start_date 的 dict，否则走损坏备份流程
-            # （防 {} / [] / {"start_date": ""} 原样返回后 current_day 崩溃）
-            if not (isinstance(data, dict) and data.get('start_date')):
+            # 结构校验：必须是含合法 YYYY-MM-DD 日期的 dict，否则走损坏备份流程
+            # （防 {} / [] / {"start_date": ""} / {"start_date": "2026/09/01"} 原样返回后 current_day 崩溃）
+            if not (isinstance(data, dict)
+                    and isinstance(data.get('start_date'), str)
+                    and re.fullmatch(r'\d{4}-\d{2}-\d{2}', data['start_date'])):
                 raise ValueError('state.json 结构非法（期望 {"start_date": "YYYY-MM-DD"}）')
             return data
         except Exception:
