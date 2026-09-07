@@ -1571,6 +1571,17 @@ def index():
     return FileResponse(os.path.join(sys_dir, '前端.html'), headers={'Cache-Control': 'no-store'})
 
 
+@app.get('/cert.cer')
+def get_cert_cer():
+    """提供证书 DER 文件，供手机/电脑下载后安装为受信任根证书（证书是公开信息，不含私钥）。"""
+    p = Path(sys_dir) / 'certs' / 'cert.cer'
+    if not p.exists():
+        raise HTTPException(404, 'cert not generated yet')
+    return FileResponse(p, media_type='application/x-x509-ca-cert',
+                        headers={'Cache-Control': 'no-store',
+                                 'Content-Disposition': 'attachment; filename="CET6-local.cer"'})
+
+
 def _ensure_self_signed_cert(cert_dir: Path):
     """确保存在自签名证书（HTTPS 供手机麦克风等安全上下文需求）。
 
@@ -1613,11 +1624,24 @@ def _ensure_self_signed_cert(cert_dir: Path):
             .not_valid_before(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1))
             .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3650))
             .add_extension(x509.SubjectAlternativeName(sans), critical=False)
+            # 作为可安装的根信任证书：CA:TRUE + serverAuth，电脑/手机均可装为受信任根
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .add_extension(x509.KeyUsage(digital_signature=True, key_encipherment=True,
+                                         content_commitment=False, data_encipherment=False,
+                                         key_agreement=False, key_cert_sign=True, crl_sign=True,
+                                         decipher_only=False, encipher_only=False), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
             .sign(key, hashes.SHA256()))
     key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM,
                                            serialization.PrivateFormat.TraditionalOpenSSL,
                                            serialization.NoEncryption()))
-    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    pem = cert.public_bytes(serialization.Encoding.PEM)
+    cert_path.write_bytes(pem)
+    # 额外写一份 DER(.cer)，方便手机/Windows 直接安装为受信任根证书
+    try:
+        (cert_dir / 'cert.cer').write_bytes(cert.public_bytes(serialization.Encoding.DER))
+    except Exception:
+        pass
     sidecar.write_text(json.dumps(cur_ips, ensure_ascii=False), encoding='utf-8')
     print(f'[https] 已生成自签名证书：{cert_path}', flush=True)
     return str(cert_path), str(key_path)
