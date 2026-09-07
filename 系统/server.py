@@ -1582,11 +1582,49 @@ def get_cert_cer():
                                  'Content-Disposition': 'attachment; filename="CET6-local.cer"'})
 
 
-def _ensure_self_signed_cert(cert_dir: Path):
-    """确保存在自签名证书（HTTPS 供手机麦克风等安全上下文需求）。
+def _ensure_ca(cert_dir: Path):
+    """确保存在持久 CA（自签根）。CA 只生成一次、装一次信任；叶子证书可随 IP 变化重签而信任不失效。"""
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    import datetime
+    ca_cert_path = cert_dir / 'ca.pem'
+    ca_key_path = cert_dir / 'ca_key.pem'
+    if ca_cert_path.exists() and ca_key_path.exists():
+        ca_cert = x509.load_pem_x509_certificate(ca_cert_path.read_bytes())
+        ca_key = serialization.load_pem_private_key(ca_key_path.read_bytes(), password=None)
+        return ca_cert, ca_key
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'CET6-local-CA')])
+    ca_cert = (x509.CertificateBuilder()
+               .subject_name(name).issuer_name(name)
+               .public_key(ca_key.public_key())
+               .serial_number(x509.random_serial_number())
+               .not_valid_before(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1))
+               .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3650))
+               .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+               .add_extension(x509.KeyUsage(digital_signature=True, key_encipherment=False,
+                                            content_commitment=False, data_encipherment=False,
+                                            key_agreement=False, key_cert_sign=True, crl_sign=True,
+                                            decipher_only=False, encipher_only=False), critical=True)
+               .sign(ca_key, hashes.SHA256()))
+    ca_cert_path.write_bytes(ca_cert.public_bytes(serialization.Encoding.PEM))
+    ca_key_path.write_bytes(ca_key.private_bytes(serialization.Encoding.PEM,
+                                                 serialization.PrivateFormat.TraditionalOpenSSL,
+                                                 serialization.NoEncryption()))
+    try:  # 导出 CA 的 DER，供电脑/手机安装为受信任根（装一次即可）
+        (cert_dir / 'ca.cer').write_bytes(ca_cert.public_bytes(serialization.Encoding.DER))
+    except Exception:
+        pass
+    return ca_cert, ca_key
 
-    缺失时用 cryptography 生成；本机 IP 变化导致 SAN 未覆盖时自动重签。
-    覆盖范围记录在 sidecar ips.json，启动时对比当前局域网 IP。
+
+def _ensure_self_signed_cert(cert_dir: Path):
+    """确保存在服务器证书（叶子，由持久 CA 签发）。
+
+    叶子证书缺失或本机 IP 变化导致 SAN 未覆盖时自动重签；因由同一 CA 签发，
+    已安装 CA 信任的设备在重签后仍然信任，无需重新安装。
     """
     cert_path = cert_dir / 'cert.pem'
     key_path = cert_dir / 'key.pem'
@@ -1600,10 +1638,10 @@ def _ensure_self_signed_cert(cert_dir: Path):
             covered = []
     if (cert_path.exists() and key_path.exists()
             and isinstance(covered, list) and all(ip in covered for ip in cur_ips)):
-        return str(cert_path), str(key_path)  # 证书已覆盖当前所有 IP，无需重签
+        return str(cert_path), str(key_path)  # 叶子已覆盖当前所有 IP，无需重签
     try:
         from cryptography import x509
-        from cryptography.x509.oid import NameOID
+        from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
         import datetime
@@ -1612,38 +1650,40 @@ def _ensure_self_signed_cert(cert_dir: Path):
         print('[https] 未安装 cryptography，无法自动生成证书，回退为 HTTP', flush=True)
         return None, None
     cert_dir.mkdir(parents=True, exist_ok=True)
+    ca_cert, ca_key = _ensure_ca(cert_dir)
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'CET6-local')])
-    # SAN 覆盖本机所有局域网 IP + localhost，减少手机"证书不匹配"警告
+    # SAN 覆盖本机所有网卡 IP（物理 + 蒲公英虚拟）+ localhost
     sans = [x509.IPAddress(ipaddress.ip_address(ip)) for ip in cur_ips]
     sans.append(x509.DNSName('localhost'))
     cert = (x509.CertificateBuilder()
-            .subject_name(name).issuer_name(name)
+            .subject_name(name).issuer_name(ca_cert.subject)
             .public_key(key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1))
-            .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3650))
+            .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=825))
             .add_extension(x509.SubjectAlternativeName(sans), critical=False)
-            # 作为可安装的根信任证书：CA:TRUE + serverAuth，电脑/手机均可装为受信任根
-            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
             .add_extension(x509.KeyUsage(digital_signature=True, key_encipherment=True,
                                          content_commitment=False, data_encipherment=False,
-                                         key_agreement=False, key_cert_sign=True, crl_sign=True,
+                                         key_agreement=False, key_cert_sign=False, crl_sign=False,
                                          decipher_only=False, encipher_only=False), critical=True)
-            .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
-            .sign(key, hashes.SHA256()))
+            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+                           critical=False)
+            .sign(ca_key, hashes.SHA256()))
     key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM,
                                            serialization.PrivateFormat.TraditionalOpenSSL,
                                            serialization.NoEncryption()))
-    pem = cert.public_bytes(serialization.Encoding.PEM)
+    # cert.pem 写入 叶子+CA 完整链，便于服务端呈现完整证书链
+    pem = cert.public_bytes(serialization.Encoding.PEM) + ca_cert.public_bytes(serialization.Encoding.PEM)
     cert_path.write_bytes(pem)
-    # 额外写一份 DER(.cer)，方便手机/Windows 直接安装为受信任根证书
     try:
         (cert_dir / 'cert.cer').write_bytes(cert.public_bytes(serialization.Encoding.DER))
     except Exception:
         pass
     sidecar.write_text(json.dumps(cur_ips, ensure_ascii=False), encoding='utf-8')
-    print(f'[https] 已生成自签名证书：{cert_path}', flush=True)
+    print(f'[https] 已生成服务器证书（CA 签发）：{cert_path}', flush=True)
     return str(cert_path), str(key_path)
 
 
