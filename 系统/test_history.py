@@ -292,6 +292,30 @@ class AttachedAudioTests(unittest.TestCase):
                 else:
                     S.cfg['paths']['history_dir'] = old
 
+    def test_index_rejects_dot_dot_id(self):
+        """id 含 '.'/'..' 等路径段时视为损坏，防绕过 path 校验整删 type 目录。"""
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            old = _fresh_server(tmp)
+            try:
+                hj = Path(tmp) / '历史记录' / 'history.json'
+                hj.parent.mkdir(parents=True, exist_ok=True)
+                type_dir = Path(tmp) / '历史记录' / 'daily'
+                type_dir.mkdir(parents=True, exist_ok=True)
+                # id='.' 使 expected 解析为 历史记录/daily，与 path 相等 → 之前会绕过校验
+                entry = {'id': '.', 'type': 'daily', 'date': 'x', 'title': 'x',
+                         'path': str(type_dir), 'created_at': 'x'}
+                hj.write_text(json.dumps([entry], ensure_ascii=False), encoding='utf-8')
+                items = S._history_index()
+                self.assertEqual(items, [])  # id 非法 → 视为损坏
+                self.assertFalse(hj.exists())
+                self.assertTrue(type_dir.exists())  # 目录未被删
+            finally:
+                if old is None:
+                    S.cfg['paths'].pop('history_dir', None)
+                else:
+                    S.cfg['paths']['history_dir'] = old
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

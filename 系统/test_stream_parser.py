@@ -83,5 +83,14 @@ assert 'Dr.' not in [s.strip() for s in s8], f'Dr. 被误切成独立句: {s8}'
 assert 'Dr. Smith went home' in full8, f'缩写句子丢失: {full8!r}'
 print(f'[8] 缩写保护: {len(s8)} 句流式切出, Dr. 未误切 OK')
 
+# 9. 同窗口内句末多句点缩写（U.S.）应切句
+p9 = SegmentStreamParser()
+o9 = p9.feed('<SEGMENT>\nHe lives in the U.S. He is happy. Dr. Smith went home.\n</SEGMENT>\nA) x\nB) y\nC) z')
+r9 = p9.finish()
+joined9 = ' '.join(o9)
+assert 'He lives in the U.S.' in joined9, f'句末 U.S. 未切句: {o9!r}'
+assert 'He is happy' in joined9, f'第二句丢失: {joined9!r}'
+print(f'[9] 句末 U.S. 切句: OK')
+
 print()
 print('ALL STREAM PARSER TESTS PASSED')

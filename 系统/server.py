@@ -25,7 +25,7 @@ import numpy as np
 import httpx
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import engine as E
 from engine import (LLMClient, TTSEngine, build_daily_prompt, parse_dialog_lines,
@@ -89,6 +89,9 @@ def _history_index() -> list[dict]:
             for i in data:
                 if i['type'] not in ALLOWED_HISTORY_TYPES:
                     raise ValueError('history.json 条目 type 非法')
+                # id 必须是单一安全路径段（防 '.' / '..' / 含分隔符的 id 绕过路径校验）
+                if not re.fullmatch(r'[A-Za-z0-9_\-]+', i['id']):
+                    raise ValueError('history.json 条目 id 非法')
                 entry = Path(i['path']).resolve()
                 expected = (history_root / i['type'] / i['id']).resolve()
                 if entry != expected:
@@ -691,7 +694,7 @@ def api_model_switch(req: ModelReq):
 
 
 class ApikeyReq(BaseModel):
-    key: str
+    key: str = Field(max_length=256)
 
 
 @app.post('/api/model/apikey')
@@ -702,7 +705,8 @@ def api_model_apikey(req: ApikeyReq):
         raise HTTPException(400, 'key 为空')
     E.save_deepseek_key(key)
     client.p['api_key'] = key
-    _online_cache.clear()  # key 变化后强制重新探测在线状态
+    with _cache_lock:
+        _online_cache.clear()  # key 变化后强制重新探测在线状态
     return {'saved': True, 'has_key': True}
 
 
@@ -782,12 +786,13 @@ def api_daily():
 def api_daily_audio(date: str, dir: str | None = None):
     if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
         raise HTTPException(400, 'date 必须是 YYYY-MM-DD')
-    base = Path(_resolve_path(cfg['paths']['daily_dir'])) / date
+    daily_root = Path(_resolve_path(cfg['paths']['daily_dir'])).resolve()
+    base = daily_root / date
     if dir:
         p = Path(_resolve_path(dir)) / 'story.wav'
-        # 安全：dir 必须位于当日目录之下，防止任意路径读取
-        if base.resolve() not in p.resolve().parents and p.resolve() != base.resolve():
-            raise HTTPException(400, 'dir 不在当日目录内')
+        # 安全：dir 解析后必须仍在每日一篇根目录之下，防止任意路径读取（含 date 目录/子目录为 junction）
+        if daily_root not in p.resolve().parents:
+            raise HTTPException(400, 'dir 不在每日一篇目录内')
     else:
         # 兼容旧数据：优先最新的时间戳子目录，其次当日根目录直存的 story.wav
         candidates = list(base.glob('*/story.wav'))
@@ -796,8 +801,8 @@ def api_daily_audio(date: str, dir: str | None = None):
         if not candidates:
             raise HTTPException(404, 'not generated yet')
         p = max(candidates, key=lambda c: c.stat().st_mtime).resolve()
-        # 安全：解析 junction/symlink 后必须仍在当日目录之下，防读取目录外文件
-        if base.resolve() not in p.parents and p != base.resolve():
+        # 安全：解析 junction/symlink 后必须仍在每日一篇根目录之下
+        if daily_root not in p.parents:
             raise HTTPException(404, 'not generated yet')
     if not p.exists():
         raise HTTPException(404, 'not generated yet')
@@ -833,8 +838,8 @@ def api_translate(req: TranslateReq):
 # ---------- 互动模式 ----------
 
 class ChoiceReq(BaseModel):
-    session_id: str
-    choice: str  # 'A'/'B'/'C' 或自由文本（D）
+    session_id: str = Field(max_length=64)
+    choice: str = Field(max_length=2000)  # 'A'/'B'/'C' 或自由文本（D）
 
 
 def _story_vocab() -> str:
@@ -920,7 +925,7 @@ def api_story_end(req: ChoiceReq):
 class TrwReq(BaseModel):
     type: str  # 'writing' | 'translation'
     task: dict | None = None  # 出题结果（grade 时带回）
-    answer: str = ''
+    answer: str = Field(default='', max_length=20000)
 
 
 @app.post('/api/trw/generate')
@@ -999,9 +1004,9 @@ def api_trw_sentence_ref(req: SentenceRefReq):
 
 
 class SentenceGradeReq(BaseModel):
-    exercise_id: str = ''        # 出题条目 id（缺省不归档）
-    sentence: str
-    answer: str
+    exercise_id: str = Field(default='', max_length=64)  # 出题条目 id（缺省不归档）
+    sentence: str = Field(max_length=300)
+    answer: str = Field(max_length=5000)
     index: int | None = None     # 句子序号（归档用）
 
 
@@ -1097,10 +1102,10 @@ def api_speaking_generate():
 
 
 class SpeakingAssessReq(BaseModel):
-    exercise_id: str
-    audio: str                      # base64 编码录音
-    audio_mime: str = 'audio/webm'  # 录音容器格式（webm/opus/ogg/wav...）
-    text: str = ''                  # 单句评分时的句子文本（缺省则评整篇）
+    exercise_id: str = Field(max_length=64)
+    audio: str = Field(max_length=12_000_000)  # base64 编码录音（约 9MB 上限）
+    audio_mime: str = Field(default='audio/webm', max_length=64)  # 录音容器格式
+    text: str = Field(default='', max_length=5000)  # 单句评分时的句子文本
     sentence_index: int | None = None  # 单句序号（用于归档与录音文件命名）
 
 

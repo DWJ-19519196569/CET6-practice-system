@@ -292,8 +292,14 @@ class SegmentStreamParser:
             cutable, pend = window[:freeze], window[freeze:]
         else:
             cutable, pend = window, ''
-        # 保护缩写句点（Dr. / U.S. 等），避免在缩写处误切；切句后还原
-        cutable = _ABBREV_RE.sub(lambda m: m.group(0).replace('.', '\x00'), cutable)
+        # 保护缩写句点（Dr. / U.S. 等），避免在缩写处误切；切句后还原。
+        # 多句点缩写（U.S.）后接「空格+大写」且在同一窗口内时，最后一个是句末句点，保留以便切句。
+        def _protect_abbrev(m):
+            ab = m.group(0)
+            if ab.count('.') >= 2 and re.match(r'\s+[A-Z]', cutable[m.end():]):
+                return ab[:-1].replace('.', '\x00') + '.'
+            return ab.replace('.', '\x00')
+        cutable = _ABBREV_RE.sub(_protect_abbrev, cutable)
         while True:
             m = self._SENT_END_RE.search(cutable)
             if not m:

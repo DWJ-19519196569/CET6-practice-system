@@ -781,7 +781,8 @@ async function toggleOptionTranslation(text, btn) {
 }
 
 function escapeHtml(s) {
-  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // ---------- 互动故事 ----------
@@ -876,12 +877,14 @@ $('btn-end').onclick = async () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId, choice: '' }),
     });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.status); }
     const d = await r.json();
     setStatus(`已归档：${escapeHtml(d.dir)}（${escapeHtml(d.segments)} 段 / ${Math.round(d.duration_s)} 秒）`);
+    // 成功后才清空会话/隐藏按钮；失败时保留 sessionId，可重试
+    sessionId = null;
+    $('options-area').innerHTML = '';
+    $('btn-end').style.display = 'none';
   } catch (e) { setStatus(`归档失败：${escapeHtml(e.message)}`); }
-  sessionId = null;
-  $('options-area').innerHTML = '';
-  $('btn-end').style.display = 'none';
   btn.disabled = false;
 };
 
@@ -1833,8 +1836,10 @@ async function spOnRecordStop(index) {
 }
 
 function spRenderSentenceScore(index, d) {
-  // 旧评分结果返回时，若已生成新题（exerciseId 变了），丢弃，避免渲染到新题上
-  if (!d || String(d.id) !== String(spExerciseId)) return;
+  if (!d) return;
+  // 新评分响应带 id：若 exerciseId 已变（旧评分返回），丢弃，避免渲染到新题上。
+  // 历史恢复的 sentence_scores[k] 不带 id，放行（此时 spExerciseId 已固定为恢复的条目）。
+  if (d.id !== undefined && String(d.id) !== String(spExerciseId)) return;
   const row = document.querySelector('.sp-sent[data-index="' + index + '"]');
   if (!row) return;
   const sentence = (spSentences || []).find(s => s.index === index);
