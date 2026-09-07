@@ -136,5 +136,19 @@ class SpeakingAudioFallbackTests(unittest.TestCase):
         self.assertTrue(r.headers['content-type'].startswith('audio/wav'))
 
 
+class ConfigValidationTests(unittest.TestCase):
+    def test_validate_rejects_missing_section(self):
+        bad = dict(S.cfg)  # 拷贝一份
+        bad.pop('daily', None)
+        with self.assertRaises(SystemExit):
+            S._validate_config(bad)
+
+    def test_validate_rejects_wrong_type(self):
+        bad = {k: (dict(v) if isinstance(v, dict) else v) for k, v in S.cfg.items()}
+        bad['daily'] = dict(bad['daily']); bad['daily']['sample_n'] = 'not-int'
+        with self.assertRaises(SystemExit):
+            S._validate_config(bad)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -34,6 +34,66 @@ from wordlist import Wordlist
 import pronounce as P
 
 cfg = load_config()
+
+
+def _validate_config(cfg):
+    """启动时集中校验配置：缺失/类型错误给出清晰报错，避免运行到请求时才 KeyError/TypeError。"""
+    def section(name):
+        v = cfg.get(name)
+        if not isinstance(v, dict):
+            raise SystemExit(f'config.toml 缺少 [{name}] 节或类型错误')
+        return v
+
+    def need(sec_name, sec, key, *types):
+        v = sec.get(key)
+        if not isinstance(v, types):
+            want = '/'.join(getattr(t, '__name__', str(t)) for t in types)
+            raise SystemExit(f'config.toml [{sec_name}] {key} 缺失或类型错误（期望 {want}）')
+        return v
+
+    server = section('server')
+    need('server', server, 'port', int)
+    need('server', server, 'host', str)
+    llm = section('llm')
+    need('llm', llm, 'active', str)
+    need('llm', llm, 'local', dict)
+    need('llm', llm, 'cloud', dict)
+    gen = need('llm', llm, 'generation', dict)
+    need('llm.generation', gen, 'temperature', int, float)
+    need('llm.generation', gen, 'max_tokens', int)
+    need('llm.generation', gen, 'timeout', int, float)
+    need('llm.generation', gen, 'max_retries', int)
+    tts = section('tts')
+    need('tts', tts, 'voice_main', str)
+    need('tts', tts, 'voice_male', str)
+    need('tts', tts, 'speed', int, float)
+    daily = section('daily')
+    need('daily', daily, 'sample_n', int)
+    need('daily', daily, 'chunk_size', int)
+    need('daily', daily, 'length_conversation', int)
+    need('daily', daily, 'length_passage', int)
+    need('daily', daily, 'length_lecture', int)
+    ip = section('interactive')
+    need('interactive', ip, 'segment_words_min', int)
+    need('interactive', ip, 'segment_words_max', int)
+    need('interactive', ip, 'history_max_segments', int)
+    sp = section('speaking')
+    need('speaking', sp, 'passage_words', int)
+    need('speaking', sp, 'sample_n', int)
+    need('speaking', sp, 'max_record_sec', int)
+    need('speaking', sp, 'scorer', str)
+    paths = section('paths')
+    for k in ('wordlist', 'daily_dir', 'story_dir', 'state'):
+        need('paths', paths, k, str)
+    # 词表文件存在性
+    wl = Path(paths['wordlist'])
+    if not wl.is_absolute():
+        wl = Path(sys_dir) / wl
+    if not wl.exists():
+        raise SystemExit(f'词表文件不存在：{wl}（检查 config.toml [paths] wordlist）')
+
+
+_validate_config(cfg)
 E.init_profiles(cfg)
 # 口语评测的参考声与项目 TTS 主音色保持一致（af_heart 等）
 os.environ['OPENPRONOUNCE_TTS_VOICE'] = cfg['tts'].get('voice_main', 'af_heart')
@@ -675,9 +735,10 @@ def api_models():
     local = cfg['llm']['local']
     cloud = cfg['llm']['cloud']
     mk = E._read_deepseek_key()
+    active, p = client.snapshot()  # 一致快照，避免 active 与 model 来自不同时刻
     return {
-        'active': client.active,
-        'model': client.p['model'],
+        'active': active,
+        'model': p['model'],
         'local': {'online': _check_online(local['base_url']), 'model': local['model'],
                   'base_url': local['base_url']},
         'cloud': {'online': _check_online(cloud['base_url'], mk), 'model': cloud['model'],
@@ -898,35 +959,43 @@ def api_story_end(req: ChoiceReq):
     session = _sessions.get(req.session_id)
     if not session:
         raise HTTPException(404, 'session not found')
-    # 拼接整局音频
-    sil = np.zeros(int(24000 * 0.4))
-    parts = []
-    for seg_audios in session['segment_audio']:
-        for a in seg_audios:
-            parts.append(a)
-        parts.append(sil.copy())
-    if parts:
-        audio = np.concatenate(parts)[:-len(sil)]
-    else:
-        audio = np.zeros(0, dtype=np.float32)
-    import soundfile as sf
-    sf.write(session['dir'] / 'story.wav', audio, 24000)
-    to_mp3(str(session['dir'] / 'story.wav'), str(session['dir'] / 'story.mp3'))
-    # transcript：正文 + 选择记录（选择跟在对应段落之后，符合阅读顺序）
-    lines = []
-    for i, seg in enumerate(session['segments']):
-        lines.append(seg + '\n')
-        if i < len(session['choices']):
-            lines.append(f'### 选择 {i + 1}: {session["choices"][i]}\n')
-    (session['dir'] / 'transcript.txt').write_text('\n'.join(lines), encoding='utf-8')
-    _archive_story({
-        'segments': session['segments'],
-        'choices': session['choices'],
-        'audio_dir': str(session['dir']),
-        'title': (session['segments'][0][:24] if session['segments'] else '互动故事'),
-    })
-    # 音频+归档都成功后再移除 session，失败时前端可重试
-    _sessions.pop(req.session_id, None)
+    # 防并发重复归档：同一 session 同时被 end 两次时，第二个直接拒绝
+    if session.get('ending'):
+        raise HTTPException(409, 'session is ending')
+    session['ending'] = True
+    try:
+        # 拼接整局音频
+        sil = np.zeros(int(24000 * 0.4))
+        parts = []
+        for seg_audios in session['segment_audio']:
+            for a in seg_audios:
+                parts.append(a)
+            parts.append(sil.copy())
+        if parts:
+            audio = np.concatenate(parts)[:-len(sil)]
+        else:
+            audio = np.zeros(0, dtype=np.float32)
+        import soundfile as sf
+        sf.write(session['dir'] / 'story.wav', audio, 24000)
+        to_mp3(str(session['dir'] / 'story.wav'), str(session['dir'] / 'story.mp3'))
+        # transcript：正文 + 选择记录（选择跟在对应段落之后，符合阅读顺序）
+        lines = []
+        for i, seg in enumerate(session['segments']):
+            lines.append(seg + '\n')
+            if i < len(session['choices']):
+                lines.append(f'### 选择 {i + 1}: {session["choices"][i]}\n')
+        (session['dir'] / 'transcript.txt').write_text('\n'.join(lines), encoding='utf-8')
+        _archive_story({
+            'segments': session['segments'],
+            'choices': session['choices'],
+            'audio_dir': str(session['dir']),
+            'title': (session['segments'][0][:24] if session['segments'] else '互动故事'),
+        })
+        # 音频+归档都成功后再移除 session，失败时前端可重试
+        _sessions.pop(req.session_id, None)
+    except Exception:
+        session['ending'] = False  # 失败时恢复，允许前端重试
+        raise
     return JSONResponse({'dir': str(session['dir']),
                          'segments': len(session['segments']),
                          'duration_s': round(len(audio) / 24000, 1)})

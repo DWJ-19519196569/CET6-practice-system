@@ -478,7 +478,7 @@ function parseSSEBlock(block) {
 
 // 与 llmFetch 保持一致：后端 llm_stream 单次 180s + 重试最坏约 360s+，
 // 前端超时须 ≥ 后端最坏时长，否则后端仍在生成、前端已 abort。
-async function streamSSE(url, body, onEvent, timeoutMs = 420000) {
+async function streamSSE(url, body, onEvent, timeoutMs = 600000) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -1825,10 +1825,12 @@ async function spOnRecordStop(index) {
     if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.status); }
     const d = await r.json();
     console.log('[口语] 评分完成：', index, 'overall=', d.overall);
+    if (String(spExerciseId) !== String(assessExerciseId)) return;  // 已换题，丢弃旧响应
     spClearStatus();
     spRenderSentenceScore(index, d);
   } catch (e) {
     console.error('[口语] 评分失败：', e);
+    if (String(spExerciseId) !== String(assessExerciseId)) return;  // 已换题，不污染新题状态
     spClearStatus();
     spStatus('评分失败：' + escapeHtml(e.message || e));
   } finally {
