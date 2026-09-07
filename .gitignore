@@ -22,3 +22,6 @@ __pycache__/
 *.log
 .DS_Store
 Thumbs.db
+
+# 运行时生成的访问地址（IP 会变）
+系统/access_urls.txt
