@@ -387,9 +387,9 @@
 <script>
 const $ = id => document.getElementById(id);
 
-// LLM 请求统一带超时。后端单次 180s × 重试1（+5xx 重试）最坏约 360s+，
-// 前端超时必须 ≥ 后端最坏时长，否则后端仍在跑、前端已 abort，导致重复生成/重复归档。
-async function llmFetch(url, body, timeoutMs = 420000) {
+// LLM 请求统一带超时。后端单次 180s × 重试1（+5xx 重试）最坏约 360s，再加本地 TTS 合成，
+// 每日一篇/口语出题最坏可超 420s，故前端超时设为 600s（10 分钟），避免前端 abort 后后端仍在跑导致重复归档。
+async function llmFetch(url, body, timeoutMs = 600000) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -1780,6 +1780,8 @@ function spToggleRecord(index) {
 async function spOnRecordStop(index) {
   if (spTimer) { clearInterval(spTimer); spTimer = null; }
   if (spStream) { spStream.getTracks().forEach(t => t.stop()); spStream = null; }
+  // 捕获本次评分的题目 id：旧评分的 finally 不得重置新题的 busy/按钮状态
+  const assessExerciseId = spExerciseId;
   const rb = document.querySelector('.sp-sent[data-index="' + index + '"] .sp-record');
   if (rb) { rb.textContent = '开始朗读'; rb.classList.remove('recording'); }
   // 立即捕获本地快照，避免随后用户操作或新录音改写全局状态
@@ -1830,8 +1832,11 @@ async function spOnRecordStop(index) {
     spClearStatus();
     spStatus('评分失败：' + escapeHtml(e.message || e));
   } finally {
-    spBusy = false;
-    spSetRecordButtonsDisabled(false);
+    // 仅当仍属于本次评分的题目时才重置；若期间已生成新题，旧响应不得干扰新题
+    if (String(spExerciseId) === String(assessExerciseId)) {
+      spBusy = false;
+      spSetRecordButtonsDisabled(false);
+    }
   }
 }
 

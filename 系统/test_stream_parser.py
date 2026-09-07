@@ -92,5 +92,19 @@ assert 'He lives in the U.S.' in joined9, f'句末 U.S. 未切句: {o9!r}'
 assert 'He is happy' in joined9, f'第二句丢失: {joined9!r}'
 print(f'[9] 句末 U.S. 切句: OK')
 
+# 10. 跨 chunk 分块：句末 U.S. 仍切句，mid-sentence U.S. 不误切
+raw10 = '<SEGMENT>He lives in the U.S. He is happy. Dr. Smith went home.</SEGMENT>\nA) x\nB) y\nC) z'
+p10, o10 = feed_by_chunk(raw10, 5)
+r10 = p10.finish()
+assert any(s.rstrip().endswith('U.S.') for s in o10), f'跨 chunk 句末 U.S. 未切句: {o10!r}'
+assert 'He is happy.' in [s.strip() for s in o10], f'第二句丢失: {o10!r}'
+assert not any(s.strip() == 'U.S.' for s in o10), f'U.S. 被误切成独立句: {o10!r}'
+
+raw10b = '<SEGMENT>He lives in the U.S. economy. It grew fast.</SEGMENT>\nA) x\nB) y\nC) z'
+p10b, o10b = feed_by_chunk(raw10b, 5)
+p10b.finish()
+assert all('U.S.' not in s or 'economy' in s for s in o10b), f'mid-sentence U.S. 误切: {o10b!r}'
+print('[10] 跨 chunk 句末/mid-sentence U.S.: OK')
+
 print()
 print('ALL STREAM PARSER TESTS PASSED')

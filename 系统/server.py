@@ -377,6 +377,7 @@ def _warmup_models():
 @asynccontextmanager
 async def _lifespan(_app):
     threading.Thread(target=_warmup_models, daemon=True).start()
+    threading.Thread(target=_session_reaper, daemon=True).start()
     yield
 
 
@@ -489,19 +490,20 @@ def sse(event: str, data: dict) -> str:
 
 def llm_stream(prompt: str):
     """调 LLM 流式接口，yield 文本增量。连接失败（尚未产生任何输出）时重试一次。"""
+    active, p = client.snapshot()  # 一致快照，避免流式生成中切模型读到新旧混合
     payload = {
-        'model': client.p['model'],
+        'model': p['model'],
         'messages': [{'role': 'user', 'content': prompt}],
         'temperature': client.temperature,
         'max_tokens': client.max_tokens,
         'stream': True,
     }
-    if client.no_think and client.active == 'local':
+    if client.no_think and active == 'local':
         payload['chat_template_kwargs'] = {'enable_thinking': False}
-    if client.active == 'cloud':
+    if active == 'cloud':
         payload['thinking'] = {'type': 'disabled'}
-    headers = {'Authorization': f"Bearer {client.p.get('api_key', 'local')}"}
-    url = client.p['base_url'].rstrip('/') + '/chat/completions'
+    headers = {'Authorization': f"Bearer {p.get('api_key', 'local')}"}
+    url = p['base_url'].rstrip('/') + '/chat/completions'
     for attempt in range(client.max_retries + 1):
         emitted = False
         try:
@@ -620,6 +622,16 @@ def _prune_sessions():
         _sessions.pop(sid, None)
 
 
+def _session_reaper():
+    """后台定期清理过期互动 session，避免不点「开始新故事」时 session 音频永久驻留内存。"""
+    while True:
+        time.sleep(300)
+        try:
+            _prune_sessions()
+        except Exception:
+            pass
+
+
 def _get_session(sid: str):
     session = _sessions.get(sid)
     if session:
@@ -704,7 +716,7 @@ def api_model_apikey(req: ApikeyReq):
     if not key:
         raise HTTPException(400, 'key 为空')
     E.save_deepseek_key(key)
-    client.p['api_key'] = key
+    client.set_api_key(key)
     with _cache_lock:
         _online_cache.clear()  # key 变化后强制重新探测在线状态
     return {'saved': True, 'has_key': True}
@@ -715,7 +727,7 @@ def api_model_apikey(req: ApikeyReq):
 @app.post('/api/daily')
 def api_daily():
     day = current_day(state)
-    words = wordlist.sample(day, cfg['daily']['sample_n'])
+    words = wordlist.sample(day, cfg['daily']['sample_n'], size=cfg['daily'].get('chunk_size', 300))
     form_idx = day % 3
     form = E.DAILY_FORMS[form_idx]
     prompt = build_daily_prompt([w for w, _ in words], form_idx, cfg)
@@ -845,7 +857,7 @@ class ChoiceReq(BaseModel):
 def _story_vocab() -> str:
     """互动故事默认织入六级词（与每日一篇同步当天词块，无开关）。"""
     day = current_day(state)
-    words = wordlist.sample(day, 25)
+    words = wordlist.sample(day, 25, size=cfg['daily'].get('chunk_size', 300))
     return E.build_interactive_vocab_note([w for w, _ in words])
 
 
