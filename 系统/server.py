@@ -1648,11 +1648,23 @@ def _ensure_self_signed_cert(cert_dir: Path):
 
 
 def _lan_ips() -> list[str]:
+    """枚举本机所有 IPv4 地址（含物理网卡 + 蒲公英等虚拟网卡），用于证书 SAN。"""
     import socket
+    ips = []
     try:
-        return [ip for ip in socket.gethostbyname_ex(socket.gethostname())[2] if ip != '127.0.0.1']
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip not in ips:
+                ips.append(ip)
     except Exception:
-        return []
+        pass
+    try:
+        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            if ip not in ips:
+                ips.append(ip)
+    except Exception:
+        pass
+    return [ip for ip in ips if ip != '127.0.0.1' and not ip.startswith('169.254.')]
 
 
 def _print_access_info(port: int, https: bool):
