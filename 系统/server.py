@@ -70,6 +70,9 @@ def _history_dir():
     return d
 
 
+ALLOWED_HISTORY_TYPES = ('daily', 'story', 'writing', 'translation', 'speaking')
+
+
 def _history_index() -> list[dict]:
     p = _history_dir() / 'history.json'
     if p.exists():
@@ -81,12 +84,15 @@ def _history_index() -> list[dict]:
                     or not all(isinstance(i, dict) and all(isinstance(i.get(k), str) for k in required)
                                for i in data)):
                 raise ValueError('history.json 结构非法（期望 list[dict] 且每条目含 id/type/date/title/path/created_at）')
-            # path 必须位于历史根目录之内，统一防「读/删/取音频文件」越界
+            # path 必须严格等于 历史记录/<type>/<id>，防读/删/取音频越界（含整删 type 目录、指向其它 id）
             history_root = _history_dir().resolve()
             for i in data:
+                if i['type'] not in ALLOWED_HISTORY_TYPES:
+                    raise ValueError('history.json 条目 type 非法')
                 entry = Path(i['path']).resolve()
-                if entry == history_root or history_root not in entry.parents:
-                    raise ValueError('history.json 条目 path 不在历史目录内')
+                expected = (history_root / i['type'] / i['id']).resolve()
+                if entry != expected:
+                    raise ValueError('history.json 条目 path 必须为 历史记录/<type>/<id>')
             return data
         except Exception:
             # 索引损坏：备份而非静默清空，避免下次保存把历史全抹掉
@@ -179,10 +185,16 @@ def _delete_attached_audio(item: dict):
         content = json.loads(cpath.read_text(encoding='utf-8'))
     except Exception:
         return
+    if not isinstance(content, dict):
+        return
     daily_root = Path(_resolve_path(cfg['paths']['daily_dir'])).resolve()
     story_root = Path(_resolve_path(cfg['paths']['story_dir'])).resolve()
-    audio_dir = content.get('audio_dir') or ''
-    audio_file = content.get('audio_file') or ''
+    audio_dir = content.get('audio_dir')
+    audio_file = content.get('audio_file')
+    if not isinstance(audio_dir, str):
+        audio_dir = ''
+    if not isinstance(audio_file, str):
+        audio_file = ''
     if audio_dir:
         p = Path(_resolve_path(audio_dir)).resolve()
         # 老数据共享的「每日一篇/日期」目录不能整删
@@ -380,14 +392,14 @@ app = FastAPI(
 @app.middleware('http')
 async def _auth_middleware(request, call_next):
     if _access_token and request.url.path.startswith('/api'):
-        tok = (request.headers.get('authorization') or '').removeprefix('Bearer ').strip()
-        if not tok:
-            # cookie 值前端用 encodeURIComponent 编码过，先 URL 解码再比较（兼容未编码值）
-            from urllib.parse import unquote
-            tok = (request.cookies.get('cet6_token') or '').strip()
-            if tok and tok != _access_token:
-                tok = unquote(tok)
-        if tok != _access_token:
+        from urllib.parse import unquote
+        header_tok = (request.headers.get('authorization') or '').removeprefix('Bearer ').strip()
+        cookie_tok = (request.cookies.get('cet6_token') or '').strip()
+        # cookie 值前端用 encodeURIComponent 编码过，先 URL 解码（兼容未编码值）
+        if cookie_tok and cookie_tok != _access_token:
+            cookie_tok = unquote(cookie_tok)
+        # header 与 cookie 任一匹配即通过（避免旧标签页的失效 header 覆盖有效 cookie）
+        if header_tok != _access_token and cookie_tok != _access_token:
             return JSONResponse({'detail': '需要访问令牌'}, status_code=401)
     return await call_next(request)
 
@@ -783,7 +795,10 @@ def api_daily_audio(date: str, dir: str | None = None):
             candidates.append(base / 'story.wav')
         if not candidates:
             raise HTTPException(404, 'not generated yet')
-        p = max(candidates, key=lambda c: c.stat().st_mtime)
+        p = max(candidates, key=lambda c: c.stat().st_mtime).resolve()
+        # 安全：解析 junction/symlink 后必须仍在当日目录之下，防读取目录外文件
+        if base.resolve() not in p.parents and p != base.resolve():
+            raise HTTPException(404, 'not generated yet')
     if not p.exists():
         raise HTTPException(404, 'not generated yet')
     return FileResponse(p, media_type='audio/wav', headers={'Cache-Control': 'no-store'})
@@ -863,7 +878,7 @@ def api_story_choose(req: ChoiceReq):
 
 @app.post('/api/story/end')
 def api_story_end(req: ChoiceReq):
-    session = _sessions.pop(req.session_id, None)
+    session = _sessions.get(req.session_id)
     if not session:
         raise HTTPException(404, 'session not found')
     # 拼接整局音频
@@ -893,6 +908,8 @@ def api_story_end(req: ChoiceReq):
         'audio_dir': str(session['dir']),
         'title': (session['segments'][0][:24] if session['segments'] else '互动故事'),
     })
+    # 音频+归档都成功后再移除 session，失败时前端可重试
+    _sessions.pop(req.session_id, None)
     return JSONResponse({'dir': str(session['dir']),
                          'segments': len(session['segments']),
                          'duration_s': round(len(audio) / 24000, 1)})
@@ -1107,15 +1124,18 @@ def api_speaking_assess(req: SpeakingAssessReq):
         raise HTTPException(400, '录音数据无效')
     if len(raw) < 2000:  # 过短录音直接拒（约 <0.1s），避免无意义评测
         raise HTTPException(400, '录音过短，请重新朗读')
+    # 负数/越界校验移到转码之前，避免先写临时 WAV 再 400 导致文件泄漏
+    idx = req.sentence_index
+    if idx is not None and idx < 0:
+        raise HTTPException(400, 'sentence_index 不能为负')
+    if idx is not None and idx >= len(item.get('sentences') or []):
+        raise HTTPException(400, 'sentence_index 越界')
     print(f'[speaking-assess] start id={req.exercise_id} idx={req.sentence_index} raw={len(raw)}B mime={req.audio_mime}', flush=True)
     try:
         wav_path = P.prepare_audio(raw, req.audio_mime)
     except Exception as e:
         raise HTTPException(500, f'音频转码失败：{e}')
     entry_dir = Path(item['path'])
-    idx = req.sentence_index
-    if idx is not None and idx < 0:
-        raise HTTPException(400, 'sentence_index 不能为负')
     user_name = f'user_{idx}.mp3' if idx is not None else 'user.mp3'
     saved_name = user_name
     try:

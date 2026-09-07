@@ -272,8 +272,13 @@ class WordTtsTests(unittest.TestCase):
                                              cookies={'cet6_token': 'a%40b'})
                 r_bad = TestClient(S.app).get('/api/tts/word', params={'text': 'hello'},
                                               cookies={'cet6_token': 'wrong'})
+                # 旧标签页的失效 header 不应覆盖有效 cookie
+                r_mixed = TestClient(S.app).get('/api/tts/word', params={'text': 'hello'},
+                                                headers={'Authorization': 'Bearer wrong'},
+                                                cookies={'cet6_token': 'a%40b'})
             self.assertEqual(r_ok.status_code, 200)   # URL 编码 cookie 解码后匹配
             self.assertEqual(r_bad.status_code, 401)
+            self.assertEqual(r_mixed.status_code, 200)  # cookie 有效时，即使 header 失效也通过
         finally:
             S._access_token = old
 

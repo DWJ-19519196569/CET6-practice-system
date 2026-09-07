@@ -74,5 +74,14 @@ try:
 except ValueError:
     print('[7] 无标记容错: OK')
 
+# 8. 缩写保护：Dr. / U.S. 不应被切成独立短句
+raw8 = '<SEGMENT>\nDr. Smith went home. He was happy. He lives in the U.S.\n</SEGMENT>\nA) x\nB) y\nC) z'
+p8, s8 = feed_by_chunk(raw8)
+r8 = p8.finish()
+full8 = ' '.join(s8) + ' ' + r8['segment']
+assert 'Dr.' not in [s.strip() for s in s8], f'Dr. 被误切成独立句: {s8}'
+assert 'Dr. Smith went home' in full8, f'缩写句子丢失: {full8!r}'
+print(f'[8] 缩写保护: {len(s8)} 句流式切出, Dr. 未误切 OK')
+
 print()
 print('ALL STREAM PARSER TESTS PASSED')

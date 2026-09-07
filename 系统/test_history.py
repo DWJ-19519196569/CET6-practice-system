@@ -254,6 +254,44 @@ class AttachedAudioTests(unittest.TestCase):
                 else:
                     S.cfg['paths']['history_dir'] = old
 
+    def test_delete_handles_non_dict_content(self):
+        """content.json=[] 时删除不崩，仍能删除该条目。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            old = _fresh_server(tmp)
+            try:
+                hid = S._archive('daily', {'text': 'x'})
+                cpath = Path(S._history_get(hid)['path']) / 'content.json'
+                cpath.write_text('[]', encoding='utf-8')
+                self.assertTrue(S._history_delete(hid))
+                self.assertIsNone(S._history_get(hid))
+            finally:
+                if old is None:
+                    S.cfg['paths'].pop('history_dir', None)
+                else:
+                    S.cfg['paths']['history_dir'] = old
+
+    def test_index_rejects_path_to_type_dir(self):
+        """history.json 条目 path 指向 type 一级目录（如 历史记录/daily）时视为损坏，防整删整类历史。"""
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            old = _fresh_server(tmp)
+            try:
+                hj = Path(tmp) / '历史记录' / 'history.json'
+                hj.parent.mkdir(parents=True, exist_ok=True)
+                type_dir = Path(tmp) / '历史记录' / 'daily'
+                type_dir.mkdir(parents=True, exist_ok=True)
+                entry = {'id': 'daily', 'type': 'daily', 'date': 'x', 'title': 'x',
+                         'path': str(type_dir), 'created_at': 'x'}
+                hj.write_text(json.dumps([entry], ensure_ascii=False), encoding='utf-8')
+                items = S._history_index()
+                self.assertEqual(items, [])  # 视为损坏，重建为空
+                self.assertFalse(hj.exists())
+            finally:
+                if old is None:
+                    S.cfg['paths'].pop('history_dir', None)
+                else:
+                    S.cfg['paths']['history_dir'] = old
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

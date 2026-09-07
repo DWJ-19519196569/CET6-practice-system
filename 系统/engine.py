@@ -292,12 +292,15 @@ class SegmentStreamParser:
             cutable, pend = window[:freeze], window[freeze:]
         else:
             cutable, pend = window, ''
+        # 保护缩写句点（Dr. / U.S. 等），避免在缩写处误切；切句后还原
+        cutable = _ABBREV_RE.sub(lambda m: m.group(0).replace('.', '\x00'), cutable)
         while True:
             m = self._SENT_END_RE.search(cutable)
             if not m:
                 break
             sent = cutable[:m.end()].strip()
             if sent:
+                sent = sent.replace('\x00', '.')
                 self.sents.append(sent)
                 out.append(sent)
             cutable = cutable[m.end():]
@@ -322,7 +325,7 @@ class SegmentStreamParser:
                 self.body = self.body[:end]
             self.finished = True
         if self.pending.strip():
-            self.sents.append(self.pending.strip())
+            self.sents.append(self.pending.strip().replace('\x00', '.'))
             self.pending = ''
         seg = self.body.strip()
         opts = []

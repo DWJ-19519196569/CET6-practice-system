@@ -1833,6 +1833,8 @@ async function spOnRecordStop(index) {
 }
 
 function spRenderSentenceScore(index, d) {
+  // 旧评分结果返回时，若已生成新题（exerciseId 变了），丢弃，避免渲染到新题上
+  if (!d || String(d.id) !== String(spExerciseId)) return;
   const row = document.querySelector('.sp-sent[data-index="' + index + '"]');
   if (!row) return;
   const sentence = (spSentences || []).find(s => s.index === index);
